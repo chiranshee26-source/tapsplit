@@ -1,0 +1,44 @@
+const test = require('node:test');
+const assert = require('node:assert');
+process.env.DB_PATH = ':memory:';
+const app = require('../server');
+
+test('create → join → claim → summary', async (t) => {
+  const server = app.listen(0);
+  t.after(() => server.close());
+  const base = `http://localhost:${server.address().port}/api`;
+  const call = async (method, path, body, headers = {}) => {
+    const r = await fetch(base + path, { method, headers: { 'Content-Type': 'application/json', ...headers }, body: body && JSON.stringify(body) });
+    return { status: r.status, body: await r.json() };
+  };
+
+  const created = await call('POST', '/bills', {
+    title: 'Dinner', payerName: 'Aarav', tax: 50, tip: 0, discount: 0,
+    items: [{ name: 'Pizza', price: 300, qty: 1 }, { name: 'Chai', price: 50, qty: 2 }],
+  });
+  assert.strictEqual(created.status, 201);
+  const { id, adminToken, personId: aarav, bill } = created.body;
+  const [pizza, chai] = bill.items;
+
+  const bea = (await call('POST', `/bills/${id}/people`, { name: 'Bea' })).body.personId;
+  await call('POST', `/bills/${id}/claims/toggle`, { itemId: pizza.id, personId: aarav });
+  await call('POST', `/bills/${id}/claims/toggle`, { itemId: pizza.id, personId: bea });
+  await call('POST', `/bills/${id}/claims/toggle`, { itemId: chai.id, personId: bea });
+
+  const { body: b } = await call('GET', `/bills/${id}`);
+  const beaRow = b.split.persons.find((p) => p.personId === bea);
+  // Bea: half pizza (150) + chai (100) = 250 of 400 food → 62.5% of ₹50 tax = 31.25
+  assert.strictEqual(beaRow.subtotal, 25000);
+  assert.strictEqual(beaRow.total, 25000 + 3125);
+  assert.deepStrictEqual(b.split.settlements.map((s) => [s.from, s.amount]), [['Bea', 28125]]);
+
+  // toggling again unclaims
+  await call('POST', `/bills/${id}/claims/toggle`, { itemId: chai.id, personId: bea });
+  assert.strictEqual((await call('GET', `/bills/${id}`)).body.split.unclaimed.length, 1);
+
+  // admin-only actions are protected
+  assert.strictEqual((await call('PATCH', `/bills/${id}`, { locked: true })).status, 403);
+  assert.strictEqual((await call('PATCH', `/bills/${id}`, { locked: true }, { 'x-admin-token': adminToken })).status, 200);
+  assert.strictEqual((await call('POST', `/bills/${id}/claims/toggle`, { itemId: chai.id, personId: bea })).status, 409);
+  assert.strictEqual((await call('GET', '/bills/nope')).status, 404);
+});
