@@ -7,6 +7,7 @@ const { computeSplit, parseReceipt } = require('./split');
 const app = express();
 app.use(express.json({ limit: '100kb' }));
 app.use(express.static(path.join(__dirname, 'public')));
+app.get('/vendor/qrcode.js', (req, res) => res.sendFile(require.resolve('qrcode-generator/qrcode.js')));
 
 const COLORS = ['#e4572e', '#17bebb', '#ffc914', '#76b041', '#7e5bef', '#ff7aa2', '#2e86ab', '#f18f01', '#3bb273', '#c03221'];
 const newId = (bytes) => crypto.randomBytes(bytes).toString('base64url');
@@ -37,10 +38,11 @@ function getBillRow(id) {
 function loadBill(id) {
   const bill = getBillRow(id);
   const items = db.prepare('SELECT id, name, price, qty FROM items WHERE bill_id = ? ORDER BY id').all(id);
-  const people = db.prepare('SELECT id, name, color FROM people WHERE bill_id = ? ORDER BY id').all(id);
+  const people = db.prepare('SELECT id, name, color, paid FROM people WHERE bill_id = ? ORDER BY id').all(id);
   const claims = db
     .prepare('SELECT c.item_id AS itemId, c.person_id AS personId FROM claims c JOIN items i ON i.id = c.item_id WHERE i.bill_id = ?')
     .all(id);
+  people.forEach((p) => { p.paid = !!p.paid; });
   const split = computeSplit(
     { tax: bill.tax, tip: bill.tip, discount: bill.discount, payerId: bill.payer_id },
     items, people, claims,
@@ -168,6 +170,16 @@ app.post('/api/bills/:id/claims/toggle', route((req, res) => {
   else db.prepare('INSERT INTO claims (item_id, person_id) VALUES (?, ?)').run(itemId, personId);
   broadcast(bill.id);
   res.json({ claimed: !exists });
+}));
+
+// Mark a person as having paid the payer back (or undo it).
+app.post('/api/bills/:id/people/:personId/paid', route((req, res) => {
+  const bill = getBillRow(req.params.id);
+  const r = db.prepare('UPDATE people SET paid = ? WHERE id = ? AND bill_id = ?')
+    .run(req.body.paid ? 1 : 0, Number(req.params.personId), bill.id);
+  if (!r.changes) throw new HttpError(404, 'Unknown person');
+  broadcast(bill.id);
+  res.json({ paid: !!req.body.paid });
 }));
 
 // Creator-only: edit tax/tip/discount/UPI, lock or unlock the bill.

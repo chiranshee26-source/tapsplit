@@ -44,4 +44,7 @@ db.exec(`
   );
 `);
 
+// Added after the first version: lets people mark that they've paid the payer back.
+try { db.exec('ALTER TABLE people ADD COLUMN paid INTEGER NOT NULL DEFAULT 0'); } catch { /* column already exists */ }
+
 module.exports = db;

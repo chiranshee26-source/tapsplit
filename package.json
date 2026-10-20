@@ -16,7 +16,8 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "express": "^4.22.3"
+    "express": "^4.22.3",
+    "qrcode-generator": "^1.4.4"
   },
   "engines": {
     "node": ">=22.5"

@@ -36,6 +36,10 @@ test('create → join → claim → summary', async (t) => {
   await call('POST', `/bills/${id}/claims/toggle`, { itemId: chai.id, personId: bea });
   assert.strictEqual((await call('GET', `/bills/${id}`)).body.split.unclaimed.length, 1);
 
+  // marking as paid
+  await call('POST', `/bills/${id}/people/${bea}/paid`, { paid: true });
+  assert.strictEqual((await call('GET', `/bills/${id}`)).body.people.find((p) => p.id === bea).paid, true);
+
   // admin-only actions are protected
   assert.strictEqual((await call('PATCH', `/bills/${id}`, { locked: true })).status, 403);
   assert.strictEqual((await call('PATCH', `/bills/${id}`, { locked: true }, { 'x-admin-token': adminToken })).status, 200);

@@ -28,13 +28,16 @@ TapSplit turns bill splitting from **one person doing data entry** into **everyo
 **How it works**
 
 1. **Paste:** The payer pastes the receipt text (from the printed bill, an SMS/e-bill, or a phone's "copy text from photo" feature). TapSplit's parser pulls out items, quantities, GST, service charge and discounts, and ignores headers like "Table 7" or "Bill No".
-2. **Share:** TapSplit creates a short link, which is shared to the group chat via the phone's share sheet. **Friends don't need an account or the app.** They open the link and type their name.
+2. **Share:** TapSplit creates a short link and a **QR code**. Friends at the table scan it from the payer's phone, or the payer sends it to WhatsApp in one tap. **Friends don't need an account or the app.** They open the link and type their name.
 3. **Tap:** Everyone taps the items they had. Claims update **live** on every phone, with colored avatars on each item. If several people tap the same item, it is split evenly between them automatically ("Split 3 ways · ₹120 each").
 4. **Settle:** TapSplit shares out tax, tip and discount **in proportion to what each person ordered**, rounded to the paisa so the shares add up *exactly* to the bill. Each friend gets a **"Pay via UPI"** button pre-filled with the payer's UPI ID and the exact amount.
 
 **Details that make it work in real life**
 
-- **Progress bar + "unclaimed" warnings**, so nobody can leave until every item is claimed.
+- **Progress bar, "unclaimed" warnings and an *Unclaimed* filter**, so nobody can leave until every item is claimed. Confetti 🎉 when the last item is claimed.
+- **All / Mine / Unclaimed filters** make long bills easy to scan.
+- **Tap your total** to see exactly how it was calculated: each dish, your share of tax and service, and your discount.
+- **Payment tracking:** friends tap "I've paid" (or the payer taps "Mark as received"), so everyone can see who still owes.
 - **Friends without a phone:** the payer can add them and tap items on their behalf ("Tapping as: Chen").
 - **Lock bill:** once everyone has claimed, the payer locks the bill so the totals become final.
 - **Payer-only controls:** editing tax/tip/discount, adding a forgotten item, and locking are protected by a secret admin token that only the creator's browser holds.
@@ -89,9 +92,17 @@ flowchart TD
 
 ### Screenshots of the working prototype
 
-| Create & paste receipt | Friend joins via link | Live claiming | Who owes what |
+| Paste receipt → items | Share via QR / WhatsApp | Friend joins via link | Live claiming |
 |---|---|---|---|
-| ![](docs/screenshots/2-parsed.png) | ![](docs/screenshots/3-join.png) | ![](docs/screenshots/4-claiming-live.png) | ![](docs/screenshots/5-summary.png) |
+| ![](docs/screenshots/2-parsed.png) | ![](docs/screenshots/3-share.png) | ![](docs/screenshots/4-join.png) | ![](docs/screenshots/5-claiming-live.png) |
+
+| Tapping for a friend | Your breakdown | Who owes what + paid status | Dark mode |
+|---|---|---|---|
+| ![](docs/screenshots/6-tapping-for-friend.png) | ![](docs/screenshots/7-breakdown.png) | ![](docs/screenshots/8-summary.png) | ![](docs/screenshots/10-dark.png) |
+
+**Desktop:** items on the left, live summary on the right.
+
+![](docs/screenshots/9-desktop.png)
 
 ## 4. Implementation
 
@@ -125,6 +136,7 @@ flowchart LR
 | Backend | **Node.js + Express** | Small REST API, same language as the frontend |
 | Database | **SQLite** (Node's built-in `node:sqlite`) | Zero setup, a single file, nothing native to compile; the tables carry over to PostgreSQL unchanged |
 | Payments | **UPI deep links** (`upi://pay?pa=…&am=…`) | Opens GPay/PhonePe/Paytm with the amount pre-filled, and needs no payment gateway |
+| Sharing | QR codes generated in the browser (`qrcode-generator`) + WhatsApp share links | Friends at the same table can join in seconds |
 | Tests | `node:test` (built-in) | Unit tests for the split math and parser, plus an API integration test |
 
 ### Key design decisions
@@ -133,13 +145,14 @@ flowchart LR
 - **Proportional extras:** tax, service charge and discount are distributed by each person's share of the food subtotal. Someone who ordered 40% of the food pays 40% of the GST and gets 40% of the discount.
 - **No sign-up for friends, but still safe:** the bill ID is random and unguessable. Only the creator gets a secret `adminToken` (sent as the `x-admin-token` header) for edits and locking. Locked bills reject all changes with `409`.
 - **Optimistic UI:** a tapped item highlights instantly, and the SSE stream then confirms the server's state on every phone.
+- **Mobile-first UX:** thumb-friendly tap targets, a sticky bottom bar with your running total, bottom sheets instead of browser pop-ups, haptic feedback, dark mode, and respect for "reduce motion" settings.
 
 ### Data model
 
 ```
 bills  (id, admin_token, title, upi_id, tax, tip, discount, payer_id, locked, created_at)
 items  (id, bill_id → bills, name, price, qty)
-people (id, bill_id → bills, name, color)          UNIQUE(bill_id, name)
+people (id, bill_id → bills, name, color, paid)    UNIQUE(bill_id, name)
 claims (item_id → items, person_id → people)        PRIMARY KEY(item_id, person_id)
 ```
 
@@ -153,6 +166,7 @@ claims (item_id → items, person_id → people)        PRIMARY KEY(item_id, per
 | `GET` | `/api/bills/:id/events` | **SSE stream** of live bill updates |
 | `POST` | `/api/bills/:id/people` | Join the bill with a name |
 | `POST` | `/api/bills/:id/claims/toggle` | Tap an item (claim / unclaim) |
+| `POST` | `/api/bills/:id/people/:personId/paid` | Mark someone as paid / not paid |
 | `PATCH` | `/api/bills/:id` | *(payer)* Edit tax/tip/discount/UPI, lock or unlock |
 | `POST` | `/api/bills/:id/items` | *(payer)* Add a forgotten item |
 | `DELETE` | `/api/bills/:id/items/:itemId` | *(payer)* Remove an item |
@@ -189,7 +203,7 @@ tapsplit/
 ├── public/
 │   ├── index.html
 │   ├── styles.css     # Mobile-first, supports dark mode
-│   └── app.js         # Single-page frontend
+│   └── app.js         # Single-page frontend (bottom sheets, filters, QR share, live updates)
 ├── test/
 │   ├── split.test.js  # Split math + parser tests
 │   └── api.test.js    # End-to-end API test
