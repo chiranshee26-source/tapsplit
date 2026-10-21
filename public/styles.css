@@ -310,3 +310,15 @@ button.chip:hover { background: var(--line); }
 @keyframes shimmer { to { background-position: -200% 0; } }
 @keyframes fall { to { transform: translateY(110vh) rotate(720deg); } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+
+/* "How many did you have?" picker for items with several plates */
+.unit-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(76px, 1fr)); gap: 8px; margin-top: 12px; }
+.unit-grid button { flex-direction: column; gap: 2px; padding: 12px 8px; font-size: 1.1rem; }
+.unit-grid small { font-size: .72rem; font-weight: 500; opacity: .8; }
+.avatar-wrap { position: relative; display: inline-flex; margin-left: -7px; }
+.stack .avatar-wrap:first-child { margin-left: 0; }
+.avatar-wrap .avatar { margin-left: 0; }
+.units-badge { position: absolute; right: -6px; bottom: -6px; font-size: .6rem; font-weight: 800; background: var(--text); color: var(--bg); border-radius: 99px; padding: 0 4px; line-height: 1.4; }
+select { width: 100%; font: inherit; color: var(--text); background: var(--sunken); border: 1px solid var(--line); border-radius: 12px; padding: 11px 12px; }
+#extras-mode { width: 100%; }
+#extras-mode button { flex: 1; white-space: normal; }

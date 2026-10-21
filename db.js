@@ -46,5 +46,9 @@ db.exec(`
 
 // Added after the first version: lets people mark that they've paid the payer back.
 try { db.exec('ALTER TABLE people ADD COLUMN paid INTEGER NOT NULL DEFAULT 0'); } catch { /* column already exists */ }
+// Added later: how many plates someone had of a multi-plate item, and how tax/service is shared.
+try { db.exec('ALTER TABLE claims ADD COLUMN units INTEGER NOT NULL DEFAULT 1'); } catch { /* already exists */ }
+try { db.exec("ALTER TABLE bills ADD COLUMN extras_mode TEXT NOT NULL DEFAULT 'proportional'"); } catch { /* already exists */ }
+try { db.exec('ALTER TABLE bills ADD COLUMN headcount INTEGER'); } catch { /* already exists */ }
 
 module.exports = db;

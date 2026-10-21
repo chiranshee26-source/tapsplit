@@ -17,30 +17,63 @@ test('allocate always sums to the total', () => {
 test('shared items, proportional tax/tip/discount, exact totals', () => {
   const people = [{ id: 1, name: 'Aarav' }, { id: 2, name: 'Bea' }, { id: 3, name: 'Chen' }];
   const items = [
-    { id: 10, name: 'Pizza', price: 30000, qty: 1 }, // shared by 1 & 2
-    { id: 11, name: 'Chai', price: 5000, qty: 2 },   // Chen alone
+    { id: 10, name: 'Pizza', price: 30000, qty: 1 }, // one plate shared by 1 & 2
+    { id: 11, name: 'Chai', price: 5000, qty: 2 },   // two cups, Chen had both
     { id: 12, name: 'Fries', price: 10000, qty: 1 }, // unclaimed
   ];
-  const claims = [{ itemId: 10, personId: 1 }, { itemId: 10, personId: 2 }, { itemId: 11, personId: 3 }];
+  const claims = [{ itemId: 10, personId: 1 }, { itemId: 10, personId: 2 }, { itemId: 11, personId: 3, units: 2 }];
   const r = computeSplit({ tax: 2500, tip: 1000, discount: 500, payerId: 1 }, items, people, claims);
   const by = Object.fromEntries(r.persons.map((p) => [p.name, p]));
   assert.strictEqual(by.Aarav.subtotal, 15000);
   assert.strictEqual(by.Chen.subtotal, 10000);
   assert.strictEqual(r.unclaimed.length, 1);
   assert.strictEqual(r.claimedTotal, 40000);
-  // extras fully distributed across claimers
+  // Extras are shared against the whole bill: the unclaimed fries' part waits, nobody gets it yet.
   const sum = (k) => r.persons.reduce((a, p) => a + p[k], 0);
-  assert.strictEqual(sum('tax'), 2500);
-  assert.strictEqual(sum('tip'), 1000);
-  assert.strictEqual(sum('discount'), 500);
+  assert.strictEqual(by.Aarav.tax, 750); // 150 / 500 of ₹25
+  assert.strictEqual(sum('tax') + sum('tip') - sum('discount') + r.extrasPending, 2500 + 1000 - 500);
   // payer is not in the settle-up list
   assert.deepStrictEqual(r.settlements.map((s) => s.from).sort(), ['Bea', 'Chen']);
+});
+
+test('several plates: each person pays for the number they had', () => {
+  const people = [{ id: 1, name: 'Me' }, { id: 2, name: 'Friend' }];
+  const items = [{ id: 1, name: 'Crispy Idli Sticks', price: 19400, qty: 2 }];
+  // Only I have claimed so far: I pay for 1 plate, the other plate is still unclaimed.
+  let r = computeSplit({ tax: 0, tip: 0, discount: 0, payerId: 1 }, items, people, [{ itemId: 1, personId: 1, units: 1 }]);
+  assert.strictEqual(r.persons[0].subtotal, 19400);
+  assert.deepStrictEqual(r.unclaimed.map((u) => [u.unitsLeft, u.amount]), [[1, 19400]]);
+  // My friend claims the other plate.
+  r = computeSplit({ tax: 0, tip: 0, discount: 0, payerId: 1 }, items, people, [
+    { itemId: 1, personId: 1, units: 1 }, { itemId: 1, personId: 2, units: 1 }]);
+  assert.deepStrictEqual(r.persons.map((p) => p.subtotal), [19400, 19400]);
+  assert.strictEqual(r.unclaimed.length, 0);
+});
+
+test('tax is not dumped on the first person to claim', () => {
+  const people = [{ id: 1, name: 'Me' }, { id: 2, name: 'Friend' }];
+  const items = [{ id: 1, name: 'Idli', price: 38800, qty: 1 }, { id: 2, name: 'Rest of the bill', price: 415500, qty: 1 }];
+  const r = computeSplit({ tax: 22716, tip: 0, discount: 0, payerId: 1 }, items, people, [{ itemId: 1, personId: 1 }]);
+  assert.strictEqual(r.persons[0].tax, 1940); // 388 / 4543 of ₹227.16 = ₹19.40, not all ₹227.16
+  assert.strictEqual(r.extrasPending, 22716 - 1940);
+});
+
+test('equal mode splits tax & service evenly between everyone sharing the bill', () => {
+  const people = [{ id: 1, name: 'A' }, { id: 2, name: 'B' }];
+  const items = [{ id: 1, name: 'Thali', price: 30000, qty: 1 }, { id: 2, name: 'Tea', price: 3000, qty: 1 }];
+  const claims = [{ itemId: 1, personId: 1 }, { itemId: 2, personId: 2 }];
+  const bill = { tax: 1200, tip: 600, discount: 0, payerId: 1, extrasMode: 'equal', headcount: 3 };
+  const r = computeSplit(bill, items, people, claims);
+  // 3 people are sharing, 2 have joined: each pays a third, the third seat's share waits.
+  assert.deepStrictEqual(r.persons.map((p) => p.tax + p.tip), [600, 600]);
+  assert.strictEqual(r.extrasPending, 600);
+  assert.strictEqual(r.headcount, 3);
 });
 
 test('fully claimed bill: everyone’s totals equal the grand total', () => {
   const people = [{ id: 1, name: 'A' }, { id: 2, name: 'B' }, { id: 3, name: 'C' }];
   const items = [{ id: 1, name: 'X', price: 10001, qty: 1 }, { id: 2, name: 'Y', price: 333, qty: 3 }];
-  const claims = [1, 2, 3].flatMap((p) => [{ itemId: 1, personId: p }]).concat([{ itemId: 2, personId: 2 }]);
+  const claims = [1, 2, 3].flatMap((p) => [{ itemId: 1, personId: p }]).concat([{ itemId: 2, personId: 2, units: 3 }]);
   const r = computeSplit({ tax: 777, tip: 101, discount: 50, payerId: 1 }, items, people, claims);
   assert.strictEqual(r.persons.reduce((a, p) => a + p.total, 0), r.grandTotal);
   assert.strictEqual(r.progress, 1);

@@ -157,7 +157,7 @@ Grand Total                 1429.00`;
 
 function renderCreate() {
   $app.className = '';
-  const state = { items: [], showPaste: true, subtotal: 0, total: 0 };
+  const state = { items: [], showPaste: true, subtotal: 0, total: 0, headcount: 2, extrasMode: 'proportional' };
   const blankItem = () => ({ name: '', qty: 1, price: '' });
   const num = (v) => parseFloat(v) || 0;
 
@@ -198,7 +198,12 @@ function renderCreate() {
         <div><label for="tip">Service / tip</label><input id="tip" inputmode="decimal" placeholder="₹0" /></div>
         <div><label for="discount">Discount</label><input id="discount" inputmode="decimal" placeholder="₹0" /></div>
       </div>
-      <p class="muted small" style="margin:10px 0 0">These are shared in proportion to what each person ordered.</p>
+      <label style="margin-top:14px">How should tax &amp; service be split?</label>
+      <div class="filters" id="extras-mode" role="radiogroup">
+        <button class="active" data-xmode="proportional" role="radio" aria-checked="true">By what each person ordered</button>
+        <button data-xmode="equal" role="radio" aria-checked="false">Equally</button>
+      </div>
+      <p class="muted small" id="xmode-hint" style="margin:8px 0 0">Someone who ordered more pays more of the tax, service and discount.</p>
     </div>
 
     <div class="section-title"><h2><span class="step-num">2</span>About you</h2></div>
@@ -206,6 +211,9 @@ function renderCreate() {
       <div class="grid2">
         <div class="field"><label for="payer">Your name (you paid)</label><input id="payer" placeholder="Aarav" autocomplete="given-name" /></div>
         <div class="field"><label for="title">Where / what was it?</label><input id="title" placeholder="Friday dinner at Blue Tokai" /></div>
+      </div>
+      <div class="field"><label>How many people are sharing this bill? <span style="font-weight:400">(including you)</span></label>
+        <div class="stepper" aria-label="Number of people"><button data-hc="-1" aria-label="Fewer people">−</button><span id="headcount">2</span><button data-hc="1" aria-label="More people">+</button></div>
       </div>
       <div><label for="upi">Your UPI ID <span style="font-weight:400">(optional, so friends can pay you in one tap)</span></label><input id="upi" placeholder="aarav@okicici" autocomplete="off" /></div>
     </div>
@@ -308,6 +316,22 @@ function renderCreate() {
     if (row && t.hasAttribute('data-remove')) {
       state.items.splice(+row.dataset.i, 1);
       drawItems();
+      return;
+    }
+    if (t.dataset.hc) {
+      state.headcount = Math.min(50, Math.max(1, state.headcount + Number(t.dataset.hc)));
+      $('headcount').textContent = state.headcount;
+      return;
+    }
+    if (t.dataset.xmode) {
+      state.extrasMode = t.dataset.xmode;
+      document.querySelectorAll('[data-xmode]').forEach((b) => {
+        b.classList.toggle('active', b === t);
+        b.setAttribute('aria-checked', b === t);
+      });
+      $('xmode-hint').textContent = state.extrasMode === 'equal'
+        ? 'Everyone pays the same share of tax, service and discount, split between the number of people above.'
+        : 'Someone who ordered more pays more of the tax, service and discount.';
       return;
     }
     if (t.id === 'add-item') { state.items.push(blankItem()); drawItems(true); return; }
@@ -447,6 +471,7 @@ function renderCreate() {
         payerName: $('payer').value,
         upiId: $('upi').value,
         tax: $('tax').value, tip: $('tip').value, discount: $('discount').value,
+        extrasMode: state.extrasMode, headcount: state.headcount,
         items,
       });
       session.set(res.id, { personId: res.personId, adminToken: res.adminToken });
@@ -500,6 +525,8 @@ function renderBill(billId) {
   const personById = (id) => bill.people.find((p) => p.id === id);
   const claimersOf = (itemId) => bill.claims.filter((c) => c.itemId === itemId).map((c) => personById(c.personId)).filter(Boolean);
   const rowFor = (pid) => bill.split.persons.find((p) => p.personId === pid);
+  const claimOf = (itemId, pid) => bill.claims.find((c) => c.itemId === itemId && c.personId === pid);
+  const unclaimedOf = (itemId) => bill.split.unclaimed.find((u) => u.itemId === itemId);
   const isAdmin = () => !!me().adminToken;
 
   function draw() {
@@ -514,7 +541,7 @@ function renderBill(billId) {
     const visible = bill.items.filter((it) => {
       const c = claimersOf(it.id);
       if (filter === 'mine') return c.some((p) => p.id === actingAs);
-      if (filter === 'open') return c.length === 0;
+      if (filter === 'open') return !!unclaimedOf(it.id);
       return true;
     });
     const actor = personById(actingAs) || you; // a just-added friend may not have arrived via the live stream yet
@@ -540,7 +567,7 @@ function renderBill(billId) {
             <div class="progress-label"><span>${pct === 100 ? 'All items claimed ✓' : `${pct}% claimed`}</span><span>${s.unclaimed.length ? `${plural(s.unclaimed.length, 'item')} left` : ''}</span></div>
 
             <div style="margin-top:14px">
-              <div class="small muted" style="margin-bottom:6px">${isAdmin() ? 'Tapping items for' : 'In this bill'}</div>
+              <div class="small muted" style="margin-bottom:6px">${isAdmin() ? 'Tapping items for' : 'In this bill'}${bill.headcount ? ` · ${Math.min(bill.people.length, bill.headcount)} of ${bill.headcount} joined` : ''}</div>
               <div class="people">
                 ${bill.people.map((p) => `
                   <${isAdmin() ? 'button' : 'span'} class="chip ${isAdmin() && p.id === actingAs ? 'selected' : ''}" data-act="${p.id}">
@@ -589,17 +616,26 @@ function renderBill(billId) {
     const mine = claimers.some((p) => p.id === actingAs);
     const line = it.price * it.qty;
     const myShare = rowFor(actingAs)?.items.find((x) => x.itemId === it.id);
-    const meta = [it.qty > 1 ? `${it.qty} × ${rupees(it.price)}` : '', claimers.length ? '' : 'Nobody yet'].filter(Boolean).join(' · ');
+    const left = unclaimedOf(it.id)?.unitsLeft || 0;
+    const meta = [
+      it.qty > 1 ? `${it.qty} × ${rupees(it.price)}` : '',
+      !claimers.length ? 'Nobody yet' : it.qty > 1 && left ? `${left} of ${it.qty} left` : '',
+    ].filter(Boolean).join(' · ');
     const popping = pop.id === it.id && Date.now() < pop.until;
+    const myUnits = claimOf(it.id, actingAs)?.units || 0;
     return `
-      <button class="item ${mine ? 'mine' : ''} ${claimers.length ? '' : 'unclaimed'} ${popping ? 'pop' : ''}" data-item="${it.id}" aria-pressed="${mine}" ${bill.locked ? 'aria-disabled="true"' : ''}>
+      <button class="item ${mine ? 'mine' : ''} ${left ? 'unclaimed' : ''} ${popping ? 'pop' : ''}" data-item="${it.id}" aria-pressed="${mine}" ${bill.locked ? 'aria-disabled="true"' : ''}>
         <span class="check" aria-hidden="true">${mine ? '✓' : ''}</span>
         <span class="info">
           <span class="name" style="display:block">${esc(it.name)}</span>
           ${meta ? `<span class="meta" style="display:block">${meta}</span>` : ''}
-          ${mine && myShare && claimers.length > 1 ? `<span class="yours" style="display:block">Split ${claimers.length} ways · your part ${rupees(myShare.share)}</span>` : ''}
+          ${mine && myShare && it.qty > 1 ? `<span class="yours" style="display:block">${actingAs === me().personId ? 'You' : esc(personById(actingAs).name)} had ${myUnits} of ${it.qty} · ${rupees(myShare.share)}</span>` : ''}
+          ${mine && myShare && it.qty === 1 && claimers.length > 1 ? `<span class="yours" style="display:block">Split ${claimers.length} ways · your part ${rupees(myShare.share)}</span>` : ''}
         </span>
-        <span class="stack">${claimers.map((p) => avatar(p)).join('')}</span>
+        <span class="stack">${claimers.map((p) => {
+          const u = it.qty > 1 ? claimOf(it.id, p.id)?.units : 0;
+          return u > 1 ? `<span class="avatar-wrap">${avatar(p)}<span class="units-badge">×${u}</span></span>` : avatar(p);
+        }).join('')}</span>
         <span class="price num">${rupees(line)}</span>
       </button>`;
   }
@@ -628,7 +664,7 @@ function renderBill(billId) {
             <span class="chev">▶</span>
           </summary>
           <div class="breakdown">
-            ${p.items.map((x) => `<div><span>${esc(x.name)}${x.splitWith > 1 ? ` <span class="small">(÷${x.splitWith})</span>` : ''}</span><span class="num">${rupees(x.share)}</span></div>`).join('') || '<div>No items yet</div>'}
+            ${p.items.map((x) => `<div><span>${esc(x.name)}${itemNote(x)}</span><span class="num">${rupees(x.share)}</span></div>`).join('') || '<div>No items yet</div>'}
             ${p.tax + p.tip ? `<div><span>Tax &amp; service</span><span class="num">${rupees(p.tax + p.tip)}</span></div>` : ''}
             ${p.discount ? `<div><span>Discount</span><span class="num">${rupees(-p.discount)}</span></div>` : ''}
             <div class="total"><span>${isPayer ? 'Their share' : `Pays ${esc(payer.name)}`}</span><span class="num">${rupees(p.total)}</span></div>
@@ -640,8 +676,9 @@ function renderBill(billId) {
     return `
       <div class="card">
         ${s.unclaimed.length
-          ? `<div class="warn"><span>⚠</span><span><b>${rupees(s.unclaimed.reduce((a, u) => a + u.amount, 0))} not claimed yet</b>: ${s.unclaimed.map((u) => esc(u.name)).join(', ')}. Totals go up once these are claimed.</span></div>`
+          ? `<div class="warn"><span>⚠</span><span><b>${rupees(s.unclaimed.reduce((a, u) => a + u.amount, 0))} not claimed yet</b>: ${s.unclaimed.map((u) => esc(u.name) + (itemById(u.itemId)?.qty > 1 ? ` (${u.unitsLeft} of ${itemById(u.itemId).qty})` : '')).join(', ')}.${s.extrasPending > 0 && s.extrasMode !== 'equal' ? ` Their share of tax &amp; service (${rupees(s.extrasPending)}) is added once they're claimed.` : ''}</span></div>`
           : `<div class="success">✓ Every item is claimed${owed ? `. ${esc(payer.name)} is owed ${rupees(owed)}` : ' and everyone has paid'}.</div>`}
+        ${s.extrasMode === 'equal' && s.extrasPending > 0 ? `<div class="warn"><span>⏳</span><span>Tax &amp; service is split equally between ${s.headcount} people. ${rupees(s.extrasPending)} is waiting for ${s.headcount - bill.people.length} more ${s.headcount - bill.people.length === 1 ? 'person' : 'people'} to join.</span></div>` : ''}
         ${rows}
         ${isAdmin() ? `
           <div class="actions" style="margin-top:14px">
@@ -676,18 +713,20 @@ function renderBill(billId) {
   }
 
   function breakdownSheet() {
-    const actor = personById(actingAs) || you; // a just-added friend may not have arrived via the live stream yet
-    const row = rowFor(actingAs);
+    const actor = personById(actingAs) || personById(me().personId); // a just-added friend may not have arrived via the live stream yet
+    const row = rowFor(actor.id);
     const payer = personById(bill.payerId);
     const sheet = openSheet(actor.id === me().personId ? 'Your share' : `${actor.name}'s share`, `
       <div class="breakdown" style="padding:0;font-size:.95rem">
-        ${row.items.map((x) => `<div><span>${esc(x.name)}${x.splitWith > 1 ? ` <span class="small">(shared by ${x.splitWith})</span>` : ''}</span><span class="num">${rupees(x.share)}</span></div>`).join('') || '<div>Nothing picked yet. Tap the items you had.</div>'}
+        ${row.items.map((x) => `<div><span>${esc(x.name)}${itemNote(x)}</span><span class="num">${rupees(x.share)}</span></div>`).join('') || '<div>Nothing picked yet. Tap the items you had.</div>'}
         <div class="total" style="font-weight:600;color:var(--muted)"><span>Food</span><span class="num">${rupees(row.subtotal)}</span></div>
         <div><span>Tax &amp; service</span><span class="num">${rupees(row.tax + row.tip)}</span></div>
         <div><span>Discount</span><span class="num">${rupees(-row.discount)}</span></div>
         <div class="total" style="font-size:1.15rem"><span>Total</span><span class="num">${rupees(row.total)}</span></div>
       </div>
-      <p class="muted small" style="margin:14px 0 0">Tax, service and discount are shared in proportion to your food (${bill.split.claimedTotal ? Math.round((row.subtotal / bill.split.claimedTotal) * 100) : 0}% of what's been claimed so far).${bill.payerId === actor.id ? '' : ` You pay this to ${esc(payer.name)}.`}</p>`);
+      <p class="muted small" style="margin:14px 0 0">${bill.split.extrasMode === 'equal'
+        ? `Tax, service and discount are split equally between the ${bill.split.headcount} people sharing this bill.`
+        : `Tax, service and discount are shared by how much food you had: ${bill.split.itemsTotal ? Math.round((row.subtotal / bill.split.itemsTotal) * 1000) / 10 : 0}% of the bill's food.`}${bill.payerId === actor.id ? '' : ` You pay this to ${esc(payer.name)}.`}</p>`);
     return sheet;
   }
 
@@ -699,6 +738,11 @@ function renderBill(billId) {
         <div><label for="s-tax">Tax</label><input id="s-tax" value="${r(bill.tax)}" inputmode="decimal" placeholder="₹0" /></div>
         <div><label for="s-tip">Service / tip</label><input id="s-tip" value="${r(bill.tip)}" inputmode="decimal" placeholder="₹0" /></div>
         <div><label for="s-discount">Discount</label><input id="s-discount" value="${r(bill.discount)}" inputmode="decimal" placeholder="₹0" /></div>
+      </div>
+      <div class="grid2 field">
+        <div><label for="s-mode">Split tax &amp; service</label>
+          <select id="s-mode"><option value="proportional" ${bill.extrasMode !== 'equal' ? 'selected' : ''}>By what each person ordered</option><option value="equal" ${bill.extrasMode === 'equal' ? 'selected' : ''}>Equally</option></select></div>
+        <div><label for="s-hc">People sharing the bill</label><input id="s-hc" value="${bill.headcount || ''}" inputmode="numeric" placeholder="${bill.people.length}" /></div>
       </div>
       <div class="field"><label for="s-upi">Your UPI ID</label><input id="s-upi" value="${esc(bill.upiId || '')}" placeholder="name@bank" /></div>
       <button id="s-save" class="block" style="margin-bottom:18px">Save changes</button>
@@ -717,6 +761,7 @@ function renderBill(billId) {
         await api('PATCH', `/api/bills/${billId}`, {
           title: sheet.$('#s-title').value, tax: sheet.$('#s-tax').value, tip: sheet.$('#s-tip').value,
           discount: sheet.$('#s-discount').value, upiId: sheet.$('#s-upi').value,
+          extrasMode: sheet.$('#s-mode').value, headcount: sheet.$('#s-hc').value,
         }, admin);
         sheet.close();
         toast('Saved');
@@ -735,6 +780,36 @@ function renderBill(billId) {
       if (!confirm('Remove this item? Anyone who claimed it will lose it.')) return;
       try { await api('DELETE', `/api/bills/${billId}/items/${del.dataset.del}`, null, admin); del.closest('div[style]').remove(); }
       catch (err) { toast(err.message); }
+    };
+  }
+
+  const itemById = (id) => bill.items.find((it) => it.id === id);
+  const itemNote = (x) => (x.splitWith > 1 ? ` <span class="small">(÷${x.splitWith})</span>` : x.units > 1 ? ` <span class="small">(×${x.units})</span>` : '');
+
+  // Several plates of the same dish: ask how many this person had.
+  function unitsSheet(it) {
+    const who = personById(actingAs) || personById(me().personId);
+    const isMe = who.id === me().personId;
+    const others = bill.claims.filter((c) => c.itemId === it.id && c.personId !== who.id);
+    const taken = others.reduce((a, c) => a + c.units, 0);
+    const max = Math.max(0, it.qty - taken);
+    const current = claimOf(it.id, who.id)?.units || 0;
+    const sheet = openSheet(isMe ? 'How many did you have?' : `How many did ${who.name} have?`, `
+      <p style="margin-top:-6px"><b>${esc(it.name)}</b> <span class="muted">· ${it.qty} on the bill · ${rupees(it.price)} each</span></p>
+      ${others.length ? `<p class="muted small">${others.map((c) => `${esc(personById(c.personId)?.name || '')} had ${c.units}`).join(' · ')}</p>` : ''}
+      ${max === 0 && !current ? `<div class="warn"><span>ℹ️</span><span>All ${it.qty} are already claimed. If you shared one, ask them to lower their number first.</span></div>` : ''}
+      <div class="unit-grid">
+        ${Array.from({ length: max + 1 }, (_, n) => `<button class="${n === current ? '' : 'ghost'}" data-units="${n}">${n === 0 ? 'None' : n}${n ? `<small>${rupees(n * it.price)}</small>` : ''}</button>`).join('')}
+      </div>`);
+    sheet.el.querySelector('.unit-grid').onclick = async (e) => {
+      const b = e.target.closest('[data-units]');
+      if (!b) return;
+      try {
+        await api('POST', `/api/bills/${billId}/claims/set`, { itemId: it.id, personId: who.id, units: +b.dataset.units });
+        sheet.close();
+        haptic();
+        pop = { id: it.id, until: Date.now() + 350 };
+      } catch (err) { toast(err.message); }
     };
   }
 
@@ -767,6 +842,8 @@ function renderBill(billId) {
       if (t.dataset.item) {
         if (bill.locked) return toast('This bill is locked. Ask the payer to reopen it.');
         const itemId = +t.dataset.item;
+        const it = itemById(itemId);
+        if (it && it.qty > 1) return unitsSheet(it);
         const nowMine = !t.classList.contains('mine');
         t.classList.toggle('mine', nowMine); // instant feedback; the live stream confirms
         t.querySelector('.check').textContent = nowMine ? '✓' : '';

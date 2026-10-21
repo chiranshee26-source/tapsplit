@@ -14,6 +14,8 @@ const COLORS = ['#e4572e', '#17bebb', '#ffc914', '#76b041', '#7e5bef', '#ff7aa2'
 const newId = (bytes) => crypto.randomBytes(bytes).toString('base64url');
 const toPaise = (v) => Math.max(0, Math.round(Number(v || 0) * 100));
 const clean = (s, max = 60) => String(s || '').trim().slice(0, max);
+const extrasMode = (v) => (v === 'equal' ? 'equal' : 'proportional');
+const headcountOf = (v) => { const n = parseInt(v, 10); return n >= 1 && n <= 50 ? n : null; };
 
 class HttpError extends Error {
   constructor(status, message) { super(message); this.status = status; }
@@ -41,11 +43,11 @@ function loadBill(id) {
   const items = db.prepare('SELECT id, name, price, qty FROM items WHERE bill_id = ? ORDER BY id').all(id);
   const people = db.prepare('SELECT id, name, color, paid FROM people WHERE bill_id = ? ORDER BY id').all(id);
   const claims = db
-    .prepare('SELECT c.item_id AS itemId, c.person_id AS personId FROM claims c JOIN items i ON i.id = c.item_id WHERE i.bill_id = ?')
+    .prepare('SELECT c.item_id AS itemId, c.person_id AS personId, c.units FROM claims c JOIN items i ON i.id = c.item_id WHERE i.bill_id = ?')
     .all(id);
   people.forEach((p) => { p.paid = !!p.paid; });
   const split = computeSplit(
-    { tax: bill.tax, tip: bill.tip, discount: bill.discount, payerId: bill.payer_id },
+    { tax: bill.tax, tip: bill.tip, discount: bill.discount, payerId: bill.payer_id, extrasMode: bill.extras_mode, headcount: bill.headcount },
     items, people, claims,
   );
   return {
@@ -56,6 +58,8 @@ function loadBill(id) {
     tip: bill.tip,
     discount: bill.discount,
     payerId: bill.payer_id,
+    extrasMode: bill.extras_mode,
+    headcount: bill.headcount,
     locked: !!bill.locked,
     createdAt: bill.created_at,
     items, people, claims, split,
@@ -133,8 +137,9 @@ app.post('/api/bills', route((req, res) => {
   const adminToken = newId(18);
   db.exec('BEGIN');
   try {
-    db.prepare('INSERT INTO bills (id, admin_token, title, upi_id, tax, tip, discount) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .run(id, adminToken, title, clean(req.body.upiId, 60) || null, toPaise(req.body.tax), toPaise(req.body.tip), toPaise(req.body.discount));
+    db.prepare('INSERT INTO bills (id, admin_token, title, upi_id, tax, tip, discount, extras_mode, headcount) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(id, adminToken, title, clean(req.body.upiId, 60) || null, toPaise(req.body.tax), toPaise(req.body.tip), toPaise(req.body.discount),
+        extrasMode(req.body.extrasMode), headcountOf(req.body.headcount));
     insertItems(id, req.body.items);
     const payerId = addPerson(id, payerName);
     db.prepare('UPDATE bills SET payer_id = ? WHERE id = ?').run(payerId, id);
@@ -174,15 +179,39 @@ app.post('/api/bills/:id/people', route((req, res) => {
   res.status(201).json({ personId });
 }));
 
-// Tap an item: claim it if you haven't, unclaim it if you have.
-app.post('/api/bills/:id/claims/toggle', route((req, res) => {
+function claimTarget(req) {
   const bill = getBillRow(req.params.id);
   if (bill.locked) throw new HttpError(409, 'This bill is locked');
   const itemId = Number(req.body.itemId);
   const personId = Number(req.body.personId);
-  const item = db.prepare('SELECT id FROM items WHERE id = ? AND bill_id = ?').get(itemId, bill.id);
+  const item = db.prepare('SELECT id, qty FROM items WHERE id = ? AND bill_id = ?').get(itemId, bill.id);
   const person = db.prepare('SELECT id FROM people WHERE id = ? AND bill_id = ?').get(personId, bill.id);
   if (!item || !person) throw new HttpError(400, 'Unknown item or person');
+  return { bill, itemId, personId, item };
+}
+
+// Say how many plates of a multi-plate item you had (0 = none).
+app.post('/api/bills/:id/claims/set', route((req, res) => {
+  const { bill, itemId, personId, item } = claimTarget(req);
+  const units = parseInt(req.body.units, 10);
+  if (!(units >= 0 && units <= item.qty)) throw new HttpError(400, `Choose between 0 and ${item.qty}`);
+  const others = db.prepare('SELECT COALESCE(SUM(units), 0) AS n FROM claims WHERE item_id = ? AND person_id != ?').get(itemId, personId).n;
+  if (units > item.qty - others) {
+    const left = item.qty - others;
+    throw new HttpError(409, left ? `Only ${left} left. The others are claimed by someone else.` : 'All of these are already claimed by others.');
+  }
+  if (units === 0) db.prepare('DELETE FROM claims WHERE item_id = ? AND person_id = ?').run(itemId, personId);
+  else {
+    db.prepare(`INSERT INTO claims (item_id, person_id, units) VALUES (?, ?, ?)
+      ON CONFLICT (item_id, person_id) DO UPDATE SET units = excluded.units`).run(itemId, personId, units);
+  }
+  broadcast(bill.id);
+  res.json({ units });
+}));
+
+// Tap an item: claim it if you haven't, unclaim it if you have.
+app.post('/api/bills/:id/claims/toggle', route((req, res) => {
+  const { bill, itemId, personId } = claimTarget(req);
 
   const exists = db.prepare('SELECT 1 FROM claims WHERE item_id = ? AND person_id = ?').get(itemId, personId);
   if (exists) db.prepare('DELETE FROM claims WHERE item_id = ? AND person_id = ?').run(itemId, personId);
@@ -206,12 +235,14 @@ app.patch('/api/bills/:id', route((req, res) => {
   const bill = getBillRow(req.params.id);
   requireAdmin(req, bill);
   const b = req.body;
-  db.prepare('UPDATE bills SET title = ?, upi_id = ?, tax = ?, tip = ?, discount = ?, locked = ? WHERE id = ?').run(
+  db.prepare('UPDATE bills SET title = ?, upi_id = ?, tax = ?, tip = ?, discount = ?, extras_mode = ?, headcount = ?, locked = ? WHERE id = ?').run(
     b.title !== undefined ? clean(b.title) || bill.title : bill.title,
     b.upiId !== undefined ? clean(b.upiId, 60) || null : bill.upi_id,
     b.tax !== undefined ? toPaise(b.tax) : bill.tax,
     b.tip !== undefined ? toPaise(b.tip) : bill.tip,
     b.discount !== undefined ? toPaise(b.discount) : bill.discount,
+    b.extrasMode !== undefined ? extrasMode(b.extrasMode) : bill.extras_mode,
+    b.headcount !== undefined ? headcountOf(b.headcount) : bill.headcount,
     b.locked !== undefined ? (b.locked ? 1 : 0) : bill.locked,
     bill.id,
   );

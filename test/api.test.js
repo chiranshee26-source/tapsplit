@@ -23,7 +23,7 @@ test('create → join → claim → summary', async (t) => {
   const bea = (await call('POST', `/bills/${id}/people`, { name: 'Bea' })).body.personId;
   await call('POST', `/bills/${id}/claims/toggle`, { itemId: pizza.id, personId: aarav });
   await call('POST', `/bills/${id}/claims/toggle`, { itemId: pizza.id, personId: bea });
-  await call('POST', `/bills/${id}/claims/toggle`, { itemId: chai.id, personId: bea });
+  await call('POST', `/bills/${id}/claims/set`, { itemId: chai.id, personId: bea, units: 2 });
 
   const { body: b } = await call('GET', `/bills/${id}`);
   const beaRow = b.split.persons.find((p) => p.personId === bea);
@@ -35,6 +35,13 @@ test('create → join → claim → summary', async (t) => {
   // toggling again unclaims
   await call('POST', `/bills/${id}/claims/toggle`, { itemId: chai.id, personId: bea });
   assert.strictEqual((await call('GET', `/bills/${id}`)).body.split.unclaimed.length, 1);
+
+  // multi-plate items: say how many you had, and you can't claim more than are left
+  const two = (await call('POST', `/bills/${id}/items`, { name: 'Idli', price: 100, qty: 2 }, { 'x-admin-token': adminToken })).body.items.at(-1);
+  assert.strictEqual((await call('POST', `/bills/${id}/claims/set`, { itemId: two.id, personId: bea, units: 1 })).status, 200);
+  assert.strictEqual((await call('POST', `/bills/${id}/claims/set`, { itemId: two.id, personId: aarav, units: 2 })).status, 409);
+  assert.strictEqual((await call('POST', `/bills/${id}/claims/set`, { itemId: two.id, personId: aarav, units: 1 })).status, 200);
+  await call('DELETE', `/bills/${id}/items/${two.id}`, null, { 'x-admin-token': adminToken });
 
   // marking as paid
   await call('POST', `/bills/${id}/people/${bea}/paid`, { paid: true });

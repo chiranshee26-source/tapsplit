@@ -20,10 +20,20 @@ function allocate(total, weights) {
 
 /**
  * Compute who owes what.
- * @param bill   { tax, tip, discount, payerId } amounts in paise
+ * @param bill   { tax, tip, discount, payerId, extrasMode, headcount } amounts in paise
  * @param items  [{ id, name, price, qty }] price in paise (per unit)
  * @param people [{ id, name }]
- * @param claims [{ itemId, personId }]
+ * @param claims [{ itemId, personId, units }]
+ *
+ * Claiming an item:
+ * - qty 1 (one plate): everyone who claims it shares it equally.
+ * - qty > 1 (several plates): each person says how many they had (`units`) and pays for those.
+ *
+ * Tax, service and discount:
+ * - 'proportional' (default): shared by how much food each person had, measured against the WHOLE
+ *   bill, so the part belonging to unclaimed food stays unassigned instead of landing on whoever
+ *   claimed first.
+ * - 'equal': split evenly between everyone sharing the bill (`headcount`, or everyone who joined).
  */
 function computeSplit(bill, items, people, claims) {
   const byPerson = new Map(people.map((p) => [p.id, { personId: p.id, name: p.name, subtotal: 0, items: [] }]));
@@ -34,25 +44,51 @@ function computeSplit(bill, items, people, claims) {
   for (const item of items) {
     const lineTotal = item.price * item.qty;
     itemsTotal += lineTotal;
-    const claimers = claims.filter((c) => c.itemId === item.id && byPerson.has(c.personId)).map((c) => c.personId);
-    if (claimers.length === 0) {
-      unclaimed.push({ itemId: item.id, name: item.name, amount: lineTotal });
+    // Sort so any extra paise always go to the same people deterministically.
+    const mine = claims
+      .filter((c) => c.itemId === item.id && byPerson.has(c.personId))
+      .sort((a, b) => a.personId - b.personId);
+
+    if (item.qty === 1) {
+      if (!mine.length) { unclaimed.push({ itemId: item.id, name: item.name, amount: lineTotal, unitsLeft: 1 }); continue; }
+      claimedTotal += lineTotal;
+      const shares = allocate(lineTotal, mine.map(() => 1));
+      mine.forEach((c, i) => {
+        const entry = byPerson.get(c.personId);
+        entry.subtotal += shares[i];
+        entry.items.push({ itemId: item.id, name: item.name, share: shares[i], splitWith: mine.length, units: 1 });
+      });
       continue;
     }
-    claimedTotal += lineTotal;
-    // Sort so the extra paise always go to the same people deterministically.
-    claimers.sort((a, b) => a - b);
-    const shares = allocate(lineTotal, claimers.map(() => 1));
-    claimers.forEach((pid, i) => {
-      const entry = byPerson.get(pid);
-      entry.subtotal += shares[i];
-      entry.items.push({ itemId: item.id, name: item.name, share: shares[i], splitWith: claimers.length });
-    });
+
+    // Several plates: everyone pays for the number they had.
+    let used = 0;
+    for (const c of mine) {
+      const units = Math.max(0, Math.min(c.units || 1, item.qty - used));
+      if (!units) continue;
+      used += units;
+      const share = units * item.price;
+      claimedTotal += share;
+      const entry = byPerson.get(c.personId);
+      entry.subtotal += share;
+      entry.items.push({ itemId: item.id, name: item.name, share, splitWith: 1, units });
+    }
+    if (used < item.qty) {
+      unclaimed.push({ itemId: item.id, name: item.name, amount: (item.qty - used) * item.price, unitsLeft: item.qty - used });
+    }
   }
 
-  // Tax, tip and discount are shared in proportion to what each person ordered.
   const persons = [...byPerson.values()];
-  const weights = persons.map((p) => p.subtotal);
+  const unclaimedFood = itemsTotal - claimedTotal;
+  let weights;
+  let headcount = persons.length;
+  if (bill.extrasMode === 'equal') {
+    // Equal shares for everyone at the table. Seats for people who haven't joined yet stay unassigned.
+    headcount = Math.max(bill.headcount || 0, persons.length);
+    weights = [...persons.map(() => 1), headcount - persons.length];
+  } else {
+    weights = [...persons.map((p) => p.subtotal), unclaimedFood];
+  }
   const taxShares = allocate(bill.tax, weights);
   const tipShares = allocate(bill.tip, weights);
   const discountShares = allocate(bill.discount, weights);
@@ -63,6 +99,8 @@ function computeSplit(bill, items, people, claims) {
     p.discount = discountShares[i];
     p.total = p.subtotal + p.tax + p.tip - p.discount;
   });
+  const last = weights.length - 1;
+  const extrasPending = taxShares[last] + tipShares[last] - discountShares[last];
 
   const grandTotal = itemsTotal + bill.tax + bill.tip - bill.discount;
 
@@ -75,6 +113,9 @@ function computeSplit(bill, items, people, claims) {
     itemsTotal,
     claimedTotal,
     grandTotal,
+    extrasMode: bill.extrasMode === 'equal' ? 'equal' : 'proportional',
+    headcount,
+    extrasPending,
     progress: itemsTotal === 0 ? 0 : claimedTotal / itemsTotal,
     unclaimed,
     persons,

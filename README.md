@@ -39,6 +39,8 @@ TapSplit turns bill splitting from **one person doing data entry** into **everyo
 - **Tap your total** to see exactly how it was calculated: each dish, your share of tax and service, and your discount.
 - **Payment tracking:** friends tap "I've paid" (or the payer taps "Mark as received"), so everyone can see who still owes.
 - **Friends without a phone:** the payer can add them and tap items on their behalf ("Tapping as: Chen").
+- **Several plates of the same dish:** for "2 × Crispy Idli Sticks", TapSplit asks **"How many did you have?"**, so you pay for 1 plate and your friend for the other. One plate shared by several people is still split evenly between them.
+- **Your choice of tax split:** the payer says how many people are sharing the bill and picks how tax and service are split: **by what each person ordered** (default) or **equally**. Tax for food nobody has claimed yet waits instead of landing on whoever claimed first.
 - **Lock bill:** once everyone has claimed, the payer locks the bill so the totals become final.
 - **Payer-only controls:** editing tax/tip/discount, adding a forgotten item, and locking are protected by a secret admin token that only the creator's browser holds.
 
@@ -159,10 +161,10 @@ flowchart LR
 ### Data model
 
 ```
-bills  (id, admin_token, title, upi_id, tax, tip, discount, payer_id, locked, created_at)
+bills  (id, admin_token, title, upi_id, tax, tip, discount, payer_id, extras_mode, headcount, locked, created_at)
 items  (id, bill_id → bills, name, price, qty)
 people (id, bill_id → bills, name, color, paid)    UNIQUE(bill_id, name)
-claims (item_id → items, person_id → people)        PRIMARY KEY(item_id, person_id)
+claims (item_id → items, person_id → people, units) PRIMARY KEY(item_id, person_id)
 ```
 
 ### REST API
@@ -176,6 +178,7 @@ claims (item_id → items, person_id → people)        PRIMARY KEY(item_id, per
 | `GET` | `/api/bills/:id/events` | **SSE stream** of live bill updates |
 | `POST` | `/api/bills/:id/people` | Join the bill with a name |
 | `POST` | `/api/bills/:id/claims/toggle` | Tap an item (claim / unclaim) |
+| `POST` | `/api/bills/:id/claims/set` | "I had N of these" for items with several plates (can't claim more than are left) |
 | `POST` | `/api/bills/:id/people/:personId/paid` | Mark someone as paid / not paid |
 | `PATCH` | `/api/bills/:id` | *(payer)* Edit tax/tip/discount/UPI, lock or unlock |
 | `POST` | `/api/bills/:id/items` | *(payer)* Add a forgotten item |
