@@ -100,7 +100,7 @@ function parsedResponse(text) {
     text,
     items: parsed.items.map((i) => ({ ...i, price: i.price / 100 })),
     tax: parsed.tax / 100, tip: parsed.tip / 100, discount: parsed.discount / 100,
-    subtotal: parsed.subtotal / 100,
+    subtotal: parsed.subtotal / 100, total: parsed.total / 100,
   };
 }
 

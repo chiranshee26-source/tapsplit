@@ -157,7 +157,7 @@ Grand Total                 1429.00`;
 
 function renderCreate() {
   $app.className = '';
-  const state = { items: [], showPaste: true, subtotal: 0 };
+  const state = { items: [], showPaste: true, subtotal: 0, total: 0 };
   const blankItem = () => ({ name: '', qty: 1, price: '' });
   const num = (v) => parseFloat(v) || 0;
 
@@ -256,16 +256,20 @@ function renderCreate() {
     checkSubtotal();
   }
 
-  // Compare the items with the subtotal printed on the bill, so misread or missing lines get noticed.
+  // Compare the items with the subtotal (or, failing that, the total) printed on the bill,
+  // so misread or missing lines get noticed.
   function checkSubtotal() {
     const box = $('subtotal-check');
     if (!box) return;
-    if (!state.subtotal) { box.innerHTML = ''; return; }
-    const items = Math.round(itemsTotal() * 100);
-    const bill = Math.round(state.subtotal * 100);
-    box.innerHTML = Math.abs(items - bill) <= 1
-      ? `<div class="success" style="margin:12px 0 0">✓ Items add up to the bill's subtotal (${rupees(bill)}).</div>`
-      : `<div class="warn" style="margin:12px 0 0"><span>⚠</span><span>These items add up to <b>${rupees(items)}</b>, but the bill's subtotal is <b>${rupees(bill)}</b>. Check for a missing, extra or misread item.</span></div>`;
+    const useSubtotal = !!state.subtotal;
+    if (!useSubtotal && !state.total) { box.innerHTML = ''; return; }
+    const extras = useSubtotal ? 0 : num($('tax').value) + num($('tip').value) - num($('discount').value);
+    const ours = Math.round((itemsTotal() + extras) * 100);
+    const bill = Math.round((useSubtotal ? state.subtotal : state.total) * 100);
+    const what = useSubtotal ? 'subtotal' : 'total';
+    box.innerHTML = Math.abs(ours - bill) <= 1
+      ? `<div class="success" style="margin:12px 0 0">✓ Items add up to the bill's ${what} (${rupees(bill)}).</div>`
+      : `<div class="warn" style="margin:12px 0 0"><span>⚠</span><span>These ${useSubtotal ? 'items' : 'items plus tax and tip'} add up to <b>${rupees(ours)}</b>, but the bill's ${what} is <b>${rupees(bill)}</b>. Some prices may have been misread or missed, so compare with your photo.</span></div>`;
   }
 
   function showBanner(count, photoUrl) {
@@ -285,8 +289,8 @@ function renderCreate() {
       const it = state.items[row.dataset.i];
       it[e.target.dataset.k] = e.target.value;
       row.querySelector('.line-total').textContent = it.qty > 1 && num(it.price) ? rupees(Math.round(num(it.price) * it.qty * 100)) : '';
-      checkSubtotal();
     }
+    checkSubtotal();
     updateCta();
   };
 
@@ -316,6 +320,7 @@ function renderCreate() {
   function applyParsed(parsed, photoUrl) {
     state.items = parsed.items.map((i) => ({ name: i.name, qty: i.qty, price: String(i.price) }));
     state.subtotal = parsed.subtotal || 0;
+    state.total = parsed.total || 0;
     state.showPaste = false;
     $('tax').value = parsed.tax || '';
     $('tip').value = parsed.tip || '';
@@ -335,25 +340,50 @@ function renderCreate() {
   }
 
   // ---------- scanning a photo / screenshot ----------
-  // Resize to a size OCR likes (small screenshots are enlarged, huge photos shrunk) and send it as JPEG.
+  // Clean the photo up for OCR: resize (small images enlarged, huge ones shrunk), greyscale,
+  // and stretch the contrast so dim restaurant photos become dark text on a light background.
   function prepareImage(file) {
     return new Promise((resolve, reject) => {
       const img = new Image();
       img.onload = () => {
         const long = Math.max(img.naturalWidth, img.naturalHeight);
-        const scale = long > 2200 ? 2200 / long : long < 1000 ? Math.min(2, 1000 / long) : 1;
+        const scale = long > 2200 ? 2200 / long : long < 1600 ? Math.min(3, 1600 / long) : 1;
         const canvas = document.createElement('canvas');
         canvas.width = Math.round(img.naturalWidth * scale);
         canvas.height = Math.round(img.naturalHeight * scale);
         const ctx = canvas.getContext('2d');
         ctx.fillStyle = '#fff';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.imageSmoothingQuality = 'high';
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error('Could not process that image'))), 'image/jpeg', 0.9);
+        autoContrast(ctx, canvas.width, canvas.height);
+        // PNG keeps the text edges crisp (JPEG artefacts hurt OCR).
+        canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error('Could not process that image'))), 'image/png');
       };
       img.onerror = () => reject(new Error("That file doesn't look like an image we can read"));
       img.src = URL.createObjectURL(file);
     });
+  }
+
+  function autoContrast(ctx, w, h) {
+    const data = ctx.getImageData(0, 0, w, h);
+    const px = data.data;
+    const grey = new Uint8ClampedArray(w * h);
+    const hist = new Array(256).fill(0);
+    for (let i = 0, j = 0; i < px.length; i += 4, j++) {
+      grey[j] = 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
+      hist[grey[j]]++;
+    }
+    // Ignore the darkest and brightest 2% when finding the range to stretch.
+    const cut = grey.length * 0.02;
+    let lo = 0, hi = 255;
+    for (let acc = 0; lo < 255 && (acc += hist[lo]) < cut; lo++);
+    for (let acc = 0; hi > 0 && (acc += hist[hi]) < cut; hi--);
+    const range = Math.max(1, hi - lo);
+    for (let i = 0, j = 0; i < px.length; i += 4, j++) {
+      px[i] = px[i + 1] = px[i + 2] = ((grey[j] - lo) * 255) / range;
+    }
+    ctx.putImageData(data, 0, 0);
   }
 
   async function scanImage(file) {
@@ -366,7 +396,7 @@ function renderCreate() {
     zone.querySelector('.scan-text').innerHTML = '<b><span class="spinner"></span> Reading your bill…</b><span class="muted small">This takes a few seconds</span>';
     try {
       const blob = await prepareImage(file);
-      const res = await fetch('/api/scan-receipt', { method: 'POST', headers: { 'Content-Type': 'image/jpeg' }, body: blob });
+      const res = await fetch('/api/scan-receipt', { method: 'POST', headers: { 'Content-Type': 'image/png' }, body: blob });
       const parsed = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(parsed.error || 'Could not read that image');
       $('receipt').value = parsed.text.trim();

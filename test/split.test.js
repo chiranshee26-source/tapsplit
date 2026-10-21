@@ -131,3 +131,28 @@ Grand Total                1197.00`;
   r = parseReceipt(bill(''));
   assert.strictEqual(r.items[0].price, 29500);
 });
+
+test('parseReceipt reads "x2.0=240.00" quantities, comma decimals and common OCR slips', () => {
+  const r = parseReceipt(`Table:44.0
+Jameson 4 cl                 95.00
+pepsi 0,25 l             x2.0=240.00
+seven up 0,25 l           X2.0%140,00   "
+potato soup in bread bowl %4..0=600.00
+chicken broth                 90,00
+beef ribs roasted with be %2.0=780.,00
+czech variety platter        490.00   oy
+bacon dumpling              X2.05140.00
+house drink-included in m    x7.0=0.00
+TOTAL                      6690.00`);
+  assert.deepStrictEqual(r.items, [
+    { name: 'Jameson 4 cl', qty: 1, price: 9500 },
+    { name: 'Pepsi 0,25 l', qty: 2, price: 12000 },
+    { name: 'Seven up 0,25 l', qty: 2, price: 7000 },
+    { name: 'Potato soup in bread bowl', qty: 4, price: 15000 },
+    { name: 'Chicken broth', qty: 1, price: 9000 },
+    { name: 'Beef ribs roasted with be', qty: 2, price: 39000 },
+    { name: 'Czech variety platter', qty: 1, price: 49000 },
+    { name: 'Bacon dumpling', qty: 2, price: 7000 },
+  ]);
+  assert.strictEqual(r.total, 669000);
+});

@@ -98,20 +98,38 @@ const NOT_FOOD = new RegExp('\\b(' + [
 ].join('|') + ')\\b');
 const LOOKS_LIKE_DATE_OR_TIME = /\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}|\d{1,2}:\d{2}/;
 const MASKED_CARD = /[x*]{3,}\s*\d{2,}/i;
+// "x2.0=240.00" (qty 2, line total 240). OCR often turns the "x" into %, ¥ or K, and the "=" into %, :, 4 or 5.
+const QTY_EQUALS_TOTAL = /[x×*%¥k]\s*([\dz]{1,2})\s*[.,]\s*0\s*([=%:\-]|[45](?=\d{3}))?\s*(\d[\d,]*[.,]\s?\d{2})\s*$/i;
 
 function parseReceipt(text) {
   const extras = { tax: 0, tip: 0, discount: 0 };
   let subtotal = 0;
-  const toPaise = (s) => Math.round(parseFloat(s.replace(/,/g, '')) * 100);
+  let total = 0;
+  // "1,390.00" → 1390, but "90,00" (comma as the decimal point, common in Europe) → 90
+  const toPaise = (s) => {
+    s = s.replace(/\s/g, '');
+    if (/,\d{2}$/.test(s) && !s.includes('.')) s = s.replace(/,(\d{2})$/, '.$1');
+    return Math.round(parseFloat(s.replace(/,/g, '')) * 100);
+  };
 
   // Pass 1: every line that ends in an amount.
   const lines = [];
   for (const rawLine of String(text).split(/\r?\n/)) {
-    const line = rawLine.replace(/[₹$€£]|\brs\.?|\binr\b/gi, ' ').replace(/\s+/g, ' ').trim();
-    const money = line.match(/(-?\d[\d,]*(?:\.\d{1,2})?)\s*$/);
-    if (!line || !money) continue;
+    let line = rawLine.replace(/[₹$€£]|\brs\.?|\binr\b/gi, ' ').replace(/\s+/g, ' ').trim();
+    // OCR leaves specks after the price ("480.00 oy", "70.00 |") and doubles punctuation ("780.,00").
+    line = line.replace(/(\d)(\s+[^\s\d]{1,3})+$/, '$1').replace(/(\d)[.,]{2,}\s?(\d)/g, '$1.$2');
+    if (!line) continue;
+    const qe = line.match(QTY_EQUALS_TOTAL);
+    if (qe) {
+      const label = line.slice(0, qe.index).trim();
+      const qty = +qe[1].replace(/z/gi, '2'); // OCR reads 2 as Z
+      lines.push({ raw: line, label, lower: label.toLowerCase(), amount: toPaise(qe[3]), decimal: true, qty });
+      continue;
+    }
+    const money = line.match(/(-?\d[\d,]*(?:[.,]\d{1,2})?)\s*$/);
+    if (!money) continue;
     const label = line.slice(0, money.index).replace(/[.\-:=]+\s*$/, '').trim();
-    lines.push({ raw: line, label, lower: label.toLowerCase(), amount: toPaise(money[1]), decimal: /\.\d{2}$/.test(money[1]) });
+    lines.push({ raw: line, label, lower: label.toLowerCase(), amount: toPaise(money[1]), decimal: /[.,]\d{2}$/.test(money[1]) });
   }
 
   // If most amounts on this receipt are written like "14.98", a bare "3483" is an ID, not a price.
@@ -120,15 +138,18 @@ function parseReceipt(text) {
 
   // Pass 2: sort lines into extras, totals and items.
   const items = [];
-  for (const { raw, label, lower, amount, decimal } of lines) {
+  for (const { raw, label, lower, amount, decimal, qty: fixedQty } of lines) {
     if (raw.includes('#') || NOT_FOOD.test(lower) || LOOKS_LIKE_DATE_OR_TIME.test(raw) || MASKED_CARD.test(raw)) continue;
     if (/^sub\s*-?\s*total\b/.test(lower)) { subtotal = subtotal || amount; continue; }
-    if (/^(total|grand total|net|amount|bill amount|balance|change|cash|paid|round(ing)?\s*off)\b/.test(lower)) continue;
+    if (/^(grand\s*)?total\b/.test(lower)) { if (/^grand/.test(lower) || !total) total = amount; continue; }
+    if (/^(net|amount|bill amount|balance|change|cash|paid|round(ing)?\s*off)\b/.test(lower)) continue;
     if (/(gst|cgst|sgst|igst|vat|tax)/.test(lower)) { extras.tax += Math.abs(amount); continue; }
     if (/(service|tip|gratuity)/.test(lower)) { extras.tip += Math.abs(amount); continue; }
     if (/(discount|offer|coupon|promo|savings|off\b)/.test(lower) || amount < 0) { extras.discount += Math.abs(amount); continue; }
     if (decimalStyle && !decimal) continue;
-    if ((label.match(/[a-z]/gi) || []).length < 2) continue; // an item needs a real name
+    if ((label.match(/[a-z]/gi) || []).length < 3) continue; // an item needs a real name
+    if (amount < 50) continue; // free items ("house drink - included") and sizes like "0,25 l" aren't prices
+    if (fixedQty) { items.push({ name: label, qty: fixedQty, price: Math.round(amount / fixedQty) }); continue; }
 
     // "Name 2 x 180" → qty 2, unit price 180
     let m = label.match(/^(.*?)\s*(\d+)\s*[x×*@]\s*$/i);
@@ -181,10 +202,12 @@ function parseReceipt(text) {
   for (const it of items) {
     delete it.lineAmount;
     // Tidy OCR noise: stray column bars, leftover punctuation, and a lowercased first letter ("paneer Tikka").
-    it.name = it.name.replace(/[|¦_~`]+/g, ' ').replace(/\s+/g, ' ').replace(/^[\s.,:;\-]+|[\s.,:;\-]+$/g, '').trim();
+    it.name = it.name.replace(/[|¦_~`]+/g, ' ').replace(/\s+/g, ' ')
+      .replace(/^([^a-z0-9]+|[a-z]{1,2}\s(?=[a-z]{3}))+/i, '') // stray OCR junk at the start ("Tt din beefeater", ") Czech platter")
+      .replace(/^[\s.,:;\-]+|[\s.,:;\-]+$/g, '').trim();
     it.name = it.name.charAt(0).toUpperCase() + it.name.slice(1);
   }
-  return { items, ...extras, subtotal };
+  return { items, ...extras, subtotal, total };
 }
 
 module.exports = { allocate, computeSplit, parseReceipt };
