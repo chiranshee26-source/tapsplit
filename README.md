@@ -227,7 +227,11 @@ tapsplit/
 
 ### Future ideas
 
-- Smarter scanning for crumpled or handwritten bills (e.g. a vision AI model)
+- **Smart scan with a small vision LLM.** Tesseract reads letters one by one, so dim photos, wrapped dish names and unusual layouts (`x2.0=240.00`) need a lot of clean-up rules. A vision LLM understands the whole receipt and can return the items directly as structured data (name, qty, price, tax, total). Free options:
+  - **Local, with [Ollama](https://ollama.com)** and a small model such as `qwen2.5vl:3b` (about 3 GB). Fully free and private, since the photo never leaves the computer, but slower on a laptop (10–60 s per bill).
+  - **Google Gemini's free API tier.** The most accurate and fast (2–5 s), but needs a free API key and sends the photo to Google.
+
+  Tesseract would stay as the automatic fallback, so the app still works with zero setup. The LLM would only *read* the bill, while the money maths and the subtotal check stay in TapSplit's own code.
 - "Usual order" memory: suggests items you usually claim at the same restaurant
 - Group bills over a trip into one settle-up using the minimum number of transfers
 - Nudges: auto-remind people who haven't claimed after 10 minutes
