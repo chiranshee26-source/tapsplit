@@ -69,3 +69,37 @@ Grand Total 1399`);
   assert.strictEqual(r.tip, 6950);
   assert.strictEqual(r.discount, 13900);
 });
+
+test('parseReceipt skips card-machine lines and returns the subtotal', () => {
+  // OCR output of a real-style US card receipt
+  const r = parseReceipt(`HARBOR LANE CAFE
+3941 GREEN OAKS BLVD
+CHICAGO, IL
+SALE
+11/20/2019     11:05 AM
+BATCH #:01A2A
+APPR #:34362
+TRACE # 8
+VISA 3483
+1 Tacos Del Mal Shrimp      $14.98
+1 Especial Salad Chicken $12.50
+1 Fountain Beverage       $1.99
+SUBTOTAL:    $29.47
+TAX:         $1.92
+TOTAL:       $31.39
+TIP:
+APPROVED
+CARD XXXX XXXX 1234`);
+  assert.deepStrictEqual(r.items.map((i) => i.name), ['Tacos Del Mal Shrimp', 'Especial Salad Chicken', 'Fountain Beverage']);
+  assert.strictEqual(r.subtotal, 2947);
+  assert.strictEqual(r.items.reduce((a, i) => a + i.price * i.qty, 0), r.subtotal);
+  assert.strictEqual(r.tax, 192);
+});
+
+test('parseReceipt keeps dishes whose names contain everyday words', () => {
+  const r = parseReceipt(`Pan Pizza 299
+Reg Fries 99
+Side Order of Fries 120
+Order No 4411`);
+  assert.deepStrictEqual(r.items.map((i) => i.name), ['Pan Pizza', 'Reg Fries', 'Side Order of Fries']);
+});

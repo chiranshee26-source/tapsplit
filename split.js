@@ -85,28 +85,50 @@ function computeSplit(bill, items, people, claims) {
 /**
  * Best-effort parser for receipt text pasted from a bill / SMS / OCR.
  * Recognises lines like "Paneer Tikka 2 x 180", "2 Cold Coffee 240.00", "Naan ..... 45".
- * Lines mentioning tax/GST/service/tip/discount are pulled out as extras.
+ * Lines mentioning tax/GST/service/tip/discount are pulled out as extras, and the
+ * printed subtotal is returned so the app can warn when the items don't add up.
  */
+// Lines that end in a number but aren't food: table/bill numbers, card-machine details, contact info…
+const NOT_FOOD = new RegExp('\\b(' + [
+  'table', 'order\\s*(no|id)', 'bill\\s*no', 'invoice', 'receipt', 'token', 'kot', 'date', 'time', 'gstin', 'fssai',
+  'phone', 'ph', 'tel', 'mob(ile)?', 'cashier', 'server', 'steward', 'waiter', 'guests?', 'covers?', 'pax', 'seat', 'emp',
+  'batch', 'appr', 'approval', 'auth', 'trace', 'ref', 'rrn', 'tid', 'mid', 'terminal', 'term', 'txn', 'trans(action)?',
+  'card', 'visa', 'master(card)?', 'amex', 'rupay', 'maestro', 'debit', 'credit', 'acct', 'account', 'upi', 'chk', 'check',
+  'station', 'register', 'store', 'pin', 'zip',
+].join('|') + ')\\b');
+const LOOKS_LIKE_DATE_OR_TIME = /\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}|\d{1,2}:\d{2}/;
+const MASKED_CARD = /[x*]{3,}\s*\d{2,}/i;
+
 function parseReceipt(text) {
-  const items = [];
   const extras = { tax: 0, tip: 0, discount: 0 };
+  let subtotal = 0;
   const toPaise = (s) => Math.round(parseFloat(s.replace(/,/g, '')) * 100);
 
+  // Pass 1: every line that ends in an amount.
+  const lines = [];
   for (const rawLine of String(text).split(/\r?\n/)) {
-    const line = rawLine.replace(/[₹$]|rs\.?|inr/gi, ' ').replace(/\s+/g, ' ').trim();
-    if (!line) continue;
+    const line = rawLine.replace(/[₹$€£]|\brs\.?|\binr\b/gi, ' ').replace(/\s+/g, ' ').trim();
     const money = line.match(/(-?\d[\d,]*(?:\.\d{1,2})?)\s*$/);
-    if (!money) continue;
-    const amount = toPaise(money[1]);
+    if (!line || !money) continue;
     const label = line.slice(0, money.index).replace(/[.\-:=]+\s*$/, '').trim();
-    const lower = label.toLowerCase();
+    lines.push({ raw: line, label, lower: label.toLowerCase(), amount: toPaise(money[1]), decimal: /\.\d{2}$/.test(money[1]) });
+  }
 
-    // Header/footer lines that end in a number but aren't food: "Table 7", "Bill No 1234", "Guests 4"…
-    if (/\b(table|order|bill\s*no|invoice|token|date|time|gstin|phone|ph|tel|mob(ile)?|cashier|server|steward|guests?|covers?|pax|kot)\b/.test(lower)) continue;
-    if (/^(sub\s*total|total|grand total|net|amount|bill amount|round(ing)?\s*off)\b/.test(lower)) continue;
-    if (/(gst|cgst|sgst|vat|tax)/.test(lower)) { extras.tax += Math.abs(amount); continue; }
+  // If most amounts on this receipt are written like "14.98", a bare "3483" is an ID, not a price.
+  const decimalCount = lines.filter((l) => l.decimal).length;
+  const decimalStyle = decimalCount >= 2 && decimalCount >= lines.length / 2;
+
+  // Pass 2: sort lines into extras, totals and items.
+  const items = [];
+  for (const { raw, label, lower, amount, decimal } of lines) {
+    if (raw.includes('#') || NOT_FOOD.test(lower) || LOOKS_LIKE_DATE_OR_TIME.test(raw) || MASKED_CARD.test(raw)) continue;
+    if (/^sub\s*-?\s*total\b/.test(lower)) { subtotal = subtotal || amount; continue; }
+    if (/^(total|grand total|net|amount|bill amount|balance|change|cash|paid|round(ing)?\s*off)\b/.test(lower)) continue;
+    if (/(gst|cgst|sgst|igst|vat|tax)/.test(lower)) { extras.tax += Math.abs(amount); continue; }
     if (/(service|tip|gratuity)/.test(lower)) { extras.tip += Math.abs(amount); continue; }
-    if (/(discount|offer|coupon|promo|off\b)/.test(lower) || amount < 0) { extras.discount += Math.abs(amount); continue; }
+    if (/(discount|offer|coupon|promo|savings|off\b)/.test(lower) || amount < 0) { extras.discount += Math.abs(amount); continue; }
+    if (decimalStyle && !decimal) continue;
+    if ((label.match(/[a-z]/gi) || []).length < 2) continue; // an item needs a real name
 
     // "Name 2 x 180" → qty 2, unit price 180
     let m = label.match(/^(.*?)\s*(\d+)\s*[x×*@]\s*$/i);
@@ -118,11 +140,11 @@ function parseReceipt(text) {
       items.push({ name: m[2].trim(), qty, price: Math.round(amount / qty) });
       continue;
     }
-    if (label) items.push({ name: label, qty: 1, price: amount });
+    items.push({ name: label, qty: 1, price: amount });
   }
   // OCR often lowercases the first letter ("paneer Tikka"), so tidy names up.
   for (const it of items) it.name = it.name.charAt(0).toUpperCase() + it.name.slice(1);
-  return { items, ...extras };
+  return { items, ...extras, subtotal };
 }
 
 module.exports = { allocate, computeSplit, parseReceipt };

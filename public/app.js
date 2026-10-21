@@ -157,7 +157,7 @@ Grand Total                 1429.00`;
 
 function renderCreate() {
   $app.className = '';
-  const state = { items: [], showPaste: true };
+  const state = { items: [], showPaste: true, subtotal: 0 };
   const blankItem = () => ({ name: '', qty: 1, price: '' });
   const num = (v) => parseFloat(v) || 0;
 
@@ -249,9 +249,23 @@ function renderCreate() {
     $('extras').classList.toggle('hidden', state.items.length === 0);
     box.innerHTML = state.items.length ? `
       <div class="edit-list">${state.items.map(rowHtml).join('')}</div>
-      <button class="ghost" id="add-item" style="margin-top:10px;width:100%">＋ Add item</button>` : '';
+      <button class="ghost" id="add-item" style="margin-top:10px;width:100%">＋ Add item</button>
+      <div id="subtotal-check"></div>` : '';
     if (focusLast) box.querySelector('.edit-row:last-child .name-input')?.focus();
     updateCta();
+    checkSubtotal();
+  }
+
+  // Compare the items with the subtotal printed on the bill, so misread or missing lines get noticed.
+  function checkSubtotal() {
+    const box = $('subtotal-check');
+    if (!box) return;
+    if (!state.subtotal) { box.innerHTML = ''; return; }
+    const items = Math.round(itemsTotal() * 100);
+    const bill = Math.round(state.subtotal * 100);
+    box.innerHTML = Math.abs(items - bill) <= 1
+      ? `<div class="success" style="margin:12px 0 0">✓ Items add up to the bill's subtotal (${rupees(bill)}).</div>`
+      : `<div class="warn" style="margin:12px 0 0"><span>⚠</span><span>These items add up to <b>${rupees(items)}</b>, but the bill's subtotal is <b>${rupees(bill)}</b>. Check for a missing, extra or misread item.</span></div>`;
   }
 
   function showBanner(count, photoUrl) {
@@ -271,6 +285,7 @@ function renderCreate() {
       const it = state.items[row.dataset.i];
       it[e.target.dataset.k] = e.target.value;
       row.querySelector('.line-total').textContent = it.qty > 1 && num(it.price) ? rupees(Math.round(num(it.price) * it.qty * 100)) : '';
+      checkSubtotal();
     }
     updateCta();
   };
@@ -300,6 +315,7 @@ function renderCreate() {
 
   function applyParsed(parsed, photoUrl) {
     state.items = parsed.items.map((i) => ({ name: i.name, qty: i.qty, price: String(i.price) }));
+    state.subtotal = parsed.subtotal || 0;
     state.showPaste = false;
     $('tax').value = parsed.tax || '';
     $('tip').value = parsed.tip || '';
