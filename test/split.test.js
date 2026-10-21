@@ -100,6 +100,34 @@ test('parseReceipt keeps dishes whose names contain everyday words', () => {
   const r = parseReceipt(`Pan Pizza 299
 Reg Fries 99
 Side Order of Fries 120
+Pepsi 500 60
 Order No 4411`);
-  assert.deepStrictEqual(r.items.map((i) => i.name), ['Pan Pizza', 'Reg Fries', 'Side Order of Fries']);
+  assert.deepStrictEqual(r.items.map((i) => i.name), ['Pan Pizza', 'Reg Fries', 'Side Order of Fries', 'Pepsi 500']);
+  assert.strictEqual(r.items[3].price, 6000);
+});
+
+test('parseReceipt handles Qty / Rate / Amount columns', () => {
+  const bill = (subtotal) => `Item              Qty   Rate    Amount
+Tandoori chicken    1   295.00  309.75
+Lasoon| Dal Tadka   1   275.00  288.75
+BIRYANI             2   375.00  787.50
+Butter Naan         | 45.00 47.25
+${subtotal}
+CGST 2.5%                    28.50
+SGST 2.5%                    28.50
+Grand Total                1197.00`;
+  // Tax listed separately: the subtotal matches the Rate column, so rates are used.
+  let r = parseReceipt(bill('Sub Total                  1140.00'));
+  assert.deepStrictEqual(r.items, [
+    { name: 'Tandoori chicken', qty: 1, price: 29500 },
+    { name: 'Lasoon Dal Tadka', qty: 1, price: 27500 },
+    { name: 'BIRYANI', qty: 2, price: 37500 },
+    { name: 'Butter Naan', qty: 1, price: 4500 },
+  ]);
+  // Subtotal matches the Amount column (tax folded in): amounts are used instead.
+  r = parseReceipt(bill('Sub Total                  1433.25'));
+  assert.deepStrictEqual(r.items.map((i) => i.price), [30975, 28875, 39375, 4725]);
+  // No subtotal printed: fall back to the rate.
+  r = parseReceipt(bill(''));
+  assert.strictEqual(r.items[0].price, 29500);
 });

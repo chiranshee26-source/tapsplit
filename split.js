@@ -132,18 +132,58 @@ function parseReceipt(text) {
 
     // "Name 2 x 180" → qty 2, unit price 180
     let m = label.match(/^(.*?)\s*(\d+)\s*[x×*@]\s*$/i);
-    if (m && m[1]) { items.push({ name: m[1].trim(), qty: +m[2], price: amount }); continue; }
+    if (m && m[1]) { items.push({ name: m[1], qty: +m[2], price: amount }); continue; }
+
+    // Column-style bills: "Name  Qty  Rate  Amount" → peel up to 2 more numbers off the end of the label.
+    const words = label.split(' ');
+    const cols = [];
+    while (words.length > 1 && cols.length < 2) {
+      const last = words[words.length - 1];
+      if (/^\d[\d,]*(\.\d{1,2})?$/.test(last)) cols.unshift(words.pop());
+      else if (cols.length && /^[|lI]$/.test(last)) { words.pop(); cols.unshift('1'); } // OCR often reads a qty of 1 as "|" or "l"
+      else break;
+    }
+    const isQty = (t) => /^\d{1,2}$/.test(t) && +t > 0;
+    // A lone whole number that can't be a quantity is part of the name ("Pepsi 500 60").
+    if (cols.length === 1 && !isQty(cols[0]) && !cols[0].includes('.')) words.push(cols.pop());
+    if (cols.length) {
+      const qtyTok = cols.find(isQty);
+      const rateTok = cols.find((t) => t !== qtyTok) || null;
+      const qty = qtyTok ? +qtyTok : 1;
+      const rate = rateTok ? toPaise(rateTok) : null;
+      // With a rate column, `amount` is the line total (sometimes including tax); keep both and decide below.
+      items.push({ name: words.join(' '), qty, price: rate ?? Math.round(amount / qty), lineAmount: rate ? amount : null });
+      continue;
+    }
+
     // "2 x Name 360" or "2 Name 360" → qty 2, line total 360
     m = label.match(/^(\d+)\s*[x×*]?\s+(.+)$/i);
     if (m && +m[1] > 0 && +m[1] < 50) {
       const qty = +m[1];
-      items.push({ name: m[2].trim(), qty, price: Math.round(amount / qty) });
+      items.push({ name: m[2], qty, price: Math.round(amount / qty) });
       continue;
     }
     items.push({ name: label, qty: 1, price: amount });
   }
-  // OCR often lowercases the first letter ("paneer Tikka"), so tidy names up.
-  for (const it of items) it.name = it.name.charAt(0).toUpperCase() + it.name.slice(1);
+
+  // Bills with both a Rate and an Amount column: use whichever matches the printed subtotal.
+  // Usually that's the rate (tax is listed separately); some bills fold tax into the amount column.
+  const withBoth = items.filter((it) => it.lineAmount);
+  if (subtotal && withBoth.length) {
+    const sum = (f) => items.reduce((a, it) => a + f(it), 0);
+    const byRate = sum((it) => it.price * it.qty);
+    const byAmount = sum((it) => (it.lineAmount ? it.lineAmount : it.price * it.qty));
+    if (Math.abs(byAmount - subtotal) < Math.abs(byRate - subtotal)) {
+      for (const it of withBoth) it.price = Math.round(it.lineAmount / it.qty);
+    }
+  }
+
+  for (const it of items) {
+    delete it.lineAmount;
+    // Tidy OCR noise: stray column bars, leftover punctuation, and a lowercased first letter ("paneer Tikka").
+    it.name = it.name.replace(/[|¦_~`]+/g, ' ').replace(/\s+/g, ' ').replace(/^[\s.,:;\-]+|[\s.,:;\-]+$/g, '').trim();
+    it.name = it.name.charAt(0).toUpperCase() + it.name.slice(1);
+  }
   return { items, ...extras, subtotal };
 }
 
