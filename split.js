@@ -112,13 +112,23 @@ function parseReceipt(text) {
     return Math.round(parseFloat(s.replace(/,/g, '')) * 100);
   };
 
-  // Pass 1: every line that ends in an amount.
+  // Pass 1: clean every line, and note the amount at its end (if any).
   const lines = [];
   for (const rawLine of String(text).split(/\r?\n/)) {
     let line = rawLine.replace(/[₹$€£]|\brs\.?|\binr\b/gi, ' ').replace(/\s+/g, ' ').trim();
-    // OCR leaves specks after the price ("480.00 oy", "70.00 |") and doubles punctuation ("780.,00").
-    line = line.replace(/(\d)(\s+[^\s\d]{1,3})+$/, '$1').replace(/(\d)[.,]{2,}\s?(\d)/g, '$1.$2');
-    if (!line) continue;
+    line = line
+      .replace(/(\d)[.,]{2,}\s?(\d)/g, '$1.$2') // doubled punctuation: "780.,00"
+      .replace(/(\d[.,]\d)[CcOo](?=\s|$)/g, '$10'); // a final 0 read as C or O: "663.0C"
+    // Anything after the last price is noise (the table or wallet behind the bill): "460.00 Stale", "70.00 oy"
+    const prices = [...line.matchAll(/\d[\d,]*[.,]\s?\d{2}(?!\d)/g)];
+    if (prices.length) {
+      const last = prices[prices.length - 1];
+      line = line.slice(0, last.index + last[0].length);
+    } else {
+      line = line.replace(/(\d)(\s+[^\s\d]{1,3})+$/, '$1');
+    }
+    if (!line) { lines.push({ blank: true }); continue; }
+
     const qe = line.match(QTY_EQUALS_TOTAL);
     if (qe) {
       const label = line.slice(0, qe.index).trim();
@@ -127,87 +137,145 @@ function parseReceipt(text) {
       continue;
     }
     const money = line.match(/(-?\d[\d,]*(?:[.,]\d{1,2})?)\s*$/);
-    if (!money) continue;
+    if (!money) { lines.push({ raw: line, noAmount: true, text: mainText(rawLine) }); continue; }
     const label = line.slice(0, money.index).replace(/[.\-:=]+\s*$/, '').trim();
-    lines.push({ raw: line, label, lower: label.toLowerCase(), amount: toPaise(money[1]), decimal: /[.,]\d{2}$/.test(money[1]) });
+    lines.push({ raw: line, label, lower: label.toLowerCase(), amount: toPaise(money[1]), decimal: /[.,]\d{2}$/.test(money[1]), text: mainText(rawLine) });
   }
 
   // If most amounts on this receipt are written like "14.98", a bare "3483" is an ID, not a price.
-  const decimalCount = lines.filter((l) => l.decimal).length;
-  const decimalStyle = decimalCount >= 2 && decimalCount >= lines.length / 2;
+  const priced = lines.filter((l) => l.amount !== undefined);
+  const decimalCount = priced.filter((l) => l.decimal).length;
+  const decimalStyle = decimalCount >= 2 && decimalCount >= priced.length / 2;
+  const isQty = (t) => /^\d{1,2}$/.test(t) && +t > 0;
 
   // Pass 2: sort lines into extras, totals and items.
   const items = [];
-  for (const { raw, label, lower, amount, decimal, qty: fixedQty } of lines) {
+  let lastItem = null; // the item on the line just above, in case its name wraps onto this line
+  for (const line of lines) {
+    const prev = lastItem;
+    lastItem = null;
+    if (line.blank) continue;
+    // A line with no real price may be the second line of the dish above it:
+    // "Garlic Roast 2 230.00 460.00" followed by "Masala Dosa" → "Garlic Roast Masala Dosa"
+    if (line.noAmount || (decimalStyle && !line.decimal && prev)) {
+      const words = cleanName(line.text.replace(/\s\d+$/, ''));
+      const letters = (words.match(/[a-z]/gi) || []).length;
+      if (prev && letters >= 3 && words.split(' ').length <= 4 && !/[:@#]/.test(line.raw) &&
+          !/\b(total|thank|thanks|visit|feedback|scan|please|qty|bill|dine|cashier|table|date|welcome)\b/i.test(words)) {
+        prev.name += ' ' + words;
+      }
+      continue;
+    }
+
+    const { raw, label, lower, amount, decimal, qty: fixedQty } = line;
     if (raw.includes('#') || NOT_FOOD.test(lower) || LOOKS_LIKE_DATE_OR_TIME.test(raw) || MASKED_CARD.test(raw)) continue;
     if (/^sub\s*-?\s*total\b/.test(lower)) { subtotal = subtotal || amount; continue; }
+    if (/\btotal\s*qty\b/.test(lower)) continue;
     if (/^(grand\s*)?total\b/.test(lower)) { if (/^grand/.test(lower) || !total) total = amount; continue; }
     if (/^(net|amount|bill amount|balance|change|cash|paid|round(ing)?\s*off)\b/.test(lower)) continue;
-    if (/(gst|cgst|sgst|igst|vat|tax)/.test(lower)) { extras.tax += Math.abs(amount); continue; }
+    if (/(gst|vat|tax)/.test(lower) || (/%/.test(label) && amount > 0 && !/(service|tip|discount|off)/.test(lower))) {
+      extras.tax += Math.abs(amount); // "CGST@2.5 2.5%", or OCR's "CEST@2.5 2.5%"
+      continue;
+    }
     if (/(service|tip|gratuity)/.test(lower)) { extras.tip += Math.abs(amount); continue; }
     if (/(discount|offer|coupon|promo|savings|off\b)/.test(lower) || amount < 0) { extras.discount += Math.abs(amount); continue; }
     if (decimalStyle && !decimal) continue;
     if ((label.match(/[a-z]/gi) || []).length < 3) continue; // an item needs a real name
     if (amount < 50) continue; // free items ("house drink - included") and sizes like "0,25 l" aren't prices
-    if (fixedQty) { items.push({ name: label, qty: fixedQty, price: Math.round(amount / fixedQty) }); continue; }
 
-    // "Name 2 x 180" → qty 2, unit price 180
-    let m = label.match(/^(.*?)\s*(\d+)\s*[x×*@]\s*$/i);
-    if (m && m[1]) { items.push({ name: m[1], qty: +m[2], price: amount }); continue; }
+    let item;
+    let m;
+    if (fixedQty) {
+      item = { name: label, qty: fixedQty, price: Math.round(amount / fixedQty) };
+    } else if ((m = label.match(/^(.*?)\s*(\d+)\s*[x×*@]\s*$/i)) && m[1]) {
+      // "Name 2 x 180" → qty 2, unit price 180
+      item = { name: m[1], qty: +m[2], price: amount };
+    } else {
+      // Column-style bills: "Name  Qty  Rate  Amount" → peel up to 2 more numbers off the end of the label.
+      const words = label.split(' ');
+      const cols = [];
+      while (words.length > 1 && cols.length < 2) {
+        const last = words[words.length - 1];
+        if (/^\d[\d,]*([.,]\d{1,2})?$/.test(last)) cols.unshift(words.pop());
+        else if (cols.length && /^[|lI]$/.test(last)) { words.pop(); cols.unshift('1'); } // OCR often reads a qty of 1 as "|" or "l"
+        else break;
+      }
+      // A lone whole number that can't be a quantity is part of the name ("Pepsi 500 60").
+      if (cols.length === 1 && !isQty(cols[0]) && !/[.,]/.test(cols[0])) words.push(cols.pop());
 
-    // Column-style bills: "Name  Qty  Rate  Amount" → peel up to 2 more numbers off the end of the label.
-    const words = label.split(' ');
-    const cols = [];
-    while (words.length > 1 && cols.length < 2) {
-      const last = words[words.length - 1];
-      if (/^\d[\d,]*(\.\d{1,2})?$/.test(last)) cols.unshift(words.pop());
-      else if (cols.length && /^[|lI]$/.test(last)) { words.pop(); cols.unshift('1'); } // OCR often reads a qty of 1 as "|" or "l"
-      else break;
+      if (cols.length) {
+        const qtyTok = cols.find(isQty);
+        const rateTok = cols.find((t) => t !== qtyTok) || null;
+        let qty = qtyTok ? +qtyTok : 1;
+        let rate = rateTok ? toPaise(rateTok) : null;
+        if (rate && !qtyTok) {
+          // OCR glued the qty onto the rate ("2 194.00" → "2194.00"): split it if qty × rate = amount.
+          const whole = rateTok.split(/[.,]/)[0];
+          for (let k = 1; k <= 2 && whole.length - k >= 2; k++) {
+            const q = +whole.slice(0, k);
+            const r = toPaise(rateTok.slice(k));
+            if (q > 0 && q * r === amount) { qty = q; rate = r; break; }
+          }
+          if (qty === 1 && amount % rate === 0 && amount / rate > 1 && amount / rate <= 20) qty = amount / rate;
+        }
+        if (words.length > 1 && /^\d$/.test(words[0])) words.shift(); // a stray digit before the name on column bills
+        // With a rate column, `amount` is the line total; keep both and reconcile below.
+        item = { name: words.join(' '), qty, price: rate ?? Math.round(amount / qty), lineAmount: rate ? amount : null };
+      } else if ((m = label.match(/^(\d+)\s*[x×*]?\s+(.+)$/i)) && +m[1] > 0 && +m[1] < 50) {
+        // "2 x Name 360" or "2 Name 360" → qty 2, line total 360
+        item = { name: m[2], qty: +m[1], price: Math.round(amount / +m[1]) };
+      } else {
+        item = { name: label, qty: 1, price: amount };
+      }
     }
-    const isQty = (t) => /^\d{1,2}$/.test(t) && +t > 0;
-    // A lone whole number that can't be a quantity is part of the name ("Pepsi 500 60").
-    if (cols.length === 1 && !isQty(cols[0]) && !cols[0].includes('.')) words.push(cols.pop());
-    if (cols.length) {
-      const qtyTok = cols.find(isQty);
-      const rateTok = cols.find((t) => t !== qtyTok) || null;
-      const qty = qtyTok ? +qtyTok : 1;
-      const rate = rateTok ? toPaise(rateTok) : null;
-      // With a rate column, `amount` is the line total (sometimes including tax); keep both and decide below.
-      items.push({ name: words.join(' '), qty, price: rate ?? Math.round(amount / qty), lineAmount: rate ? amount : null });
-      continue;
-    }
-
-    // "2 x Name 360" or "2 Name 360" → qty 2, line total 360
-    m = label.match(/^(\d+)\s*[x×*]?\s+(.+)$/i);
-    if (m && +m[1] > 0 && +m[1] < 50) {
-      const qty = +m[1];
-      items.push({ name: m[2], qty, price: Math.round(amount / qty) });
-      continue;
-    }
-    items.push({ name: label, qty: 1, price: amount });
+    items.push(item);
+    lastItem = item;
   }
 
-  // Bills with both a Rate and an Amount column: use whichever matches the printed subtotal.
-  // Usually that's the rate (tax is listed separately); some bills fold tax into the amount column.
-  const withBoth = items.filter((it) => it.lineAmount);
-  if (subtotal && withBoth.length) {
-    const sum = (f) => items.reduce((a, it) => a + f(it), 0);
-    const byRate = sum((it) => it.price * it.qty);
-    const byAmount = sum((it) => (it.lineAmount ? it.lineAmount : it.price * it.qty));
-    if (Math.abs(byAmount - subtotal) < Math.abs(byRate - subtotal)) {
-      for (const it of withBoth) it.price = Math.round(it.lineAmount / it.qty);
-    }
-  }
+  reconcileColumns(items, subtotal || (total ? total - extras.tax - extras.tip + extras.discount : 0));
 
   for (const it of items) {
     delete it.lineAmount;
-    // Tidy OCR noise: stray column bars, leftover punctuation, and a lowercased first letter ("paneer Tikka").
-    it.name = it.name.replace(/[|¦_~`]+/g, ' ').replace(/\s+/g, ' ')
-      .replace(/^([^a-z0-9]+|[a-z]{1,2}\s(?=[a-z]{3}))+/i, '') // stray OCR junk at the start ("Tt din beefeater", ") Czech platter")
-      .replace(/^[\s.,:;\-]+|[\s.,:;\-]+$/g, '').trim();
+    it.name = cleanName(it.name);
     it.name = it.name.charAt(0).toUpperCase() + it.name.slice(1);
   }
   return { items, ...extras, subtotal, total };
+}
+
+// Bills with both a Rate and an Amount column: when qty × rate ≠ amount, one of them was misread
+// (or the amount includes tax). Pick, for each such row, the value that makes the items add up to
+// the bill's own subtotal. With nothing to check against, trust the rate.
+function reconcileColumns(items, target) {
+  const unsure = items.filter((it) => it.lineAmount && it.lineAmount !== it.price * it.qty);
+  if (!unsure.length || !target) return;
+  const sure = items.filter((it) => !unsure.includes(it)).reduce((a, it) => a + it.price * it.qty, 0);
+  const n = Math.min(unsure.length, 14);
+  let best = 0;
+  let bestDiff = Infinity;
+  for (let mask = 0; mask < 1 << n; mask++) {
+    let sum = sure;
+    unsure.forEach((it, i) => { sum += i < n && mask & (1 << i) ? it.lineAmount : it.price * it.qty; });
+    const diff = Math.abs(sum - target);
+    if (diff < bestDiff) { best = mask; bestDiff = diff; }
+  }
+  unsure.forEach((it, i) => { if (i < n && best & (1 << i)) it.price = Math.round(it.lineAmount / it.qty); });
+}
+
+// The real text on a line, without noise OCR picked up from the table or wallet next to the bill.
+// OCR keeps a wide gap between the two ("Masala Dosa          ES REE"), so keep the part with lowercase letters.
+function mainText(rawLine) {
+  const parts = rawLine.split(/\s{3,}/).map((p) => p.trim()).filter(Boolean);
+  return parts.find((p) => /[a-z]{2}/.test(p)) || parts[0] || '';
+}
+
+// Tidy OCR noise in a dish name: stray column bars, junk at the start, leftover punctuation.
+function cleanName(name) {
+  return name.replace(/[|¦_~`]+/g, ' ').replace(/[{[]/g, '(').replace(/[}\]]/g, ')').replace(/\s+/g, ' ')
+    .replace(/^([^a-z0-9(]+|[a-z]{1,2}\s(?=[a-z]{3})|[lI1!]{2,}\s)+/i, '') // "Tt din beefeater", ") Czech platter", "lll Chaat"
+    .replace(/\(\s+/g, '(').replace(/\s+\)/g, ')')
+    .replace(/\b0(?=[A-Z])|(?<=[A-Z])0\b/g, 'O') // "The 0G Cold Coffee" → "The OG Cold Coffee"
+    .replace(/^[\s.,:;\-]+|[\s.,:;\-]+$/g, '')
+    .trim();
 }
 
 module.exports = { allocate, computeSplit, parseReceipt };

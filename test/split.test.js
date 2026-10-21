@@ -156,3 +156,35 @@ TOTAL                      6690.00`);
   ]);
   assert.strictEqual(r.total, 669000);
 });
+
+test('parseReceipt copes with background noise, wrapped names and misread digits (real OCR output)', () => {
+  // Tesseract's output for a phone photo of a café bill held in a leather folder
+  const r = parseReceipt(`Poller Bl No. 5376          s sie
+rleny [dll Sticks 2194.00 388.00     SoA
+in      alm vada Dahl 3 221,00 663.0C      18 Sey
+lll Chaat                              GEE
+ll Garlic Roast     2 230.00 460.00      Stale
+Masala Dosa                      ES REE
+;   Ghee Podi Masale 3 230.00 690.00      2h
+Dosa                                 2
+The 0G Cold      3 194,00 582.00          ;
+Coffee
+Kokum Cooler {    1 158.00 158.00
+3        Real Fruit )
+Total Qty: 23 —UR4543.00
+z                 CEST@2.5 2.5% 113.58
+SGST@2.5 2.5% 113.58
+Round off         -0.1€
+Grand Total 4770.00
+Thanks For Visit Again`);
+  assert.deepStrictEqual(r.items, [
+    { name: 'Rleny (dll Sticks', qty: 2, price: 19400 },
+    { name: 'Alm vada Dahl Chaat', qty: 3, price: 22100 },
+    { name: 'Garlic Roast Masala Dosa', qty: 2, price: 23000 },
+    { name: 'Ghee Podi Masale Dosa', qty: 3, price: 23000 },
+    { name: 'The OG Cold Coffee', qty: 3, price: 19400 },
+    { name: 'Kokum Cooler (Real Fruit)', qty: 1, price: 15800 },
+  ]);
+  assert.strictEqual(r.tax, 22716);
+  assert.strictEqual(r.total, 477000);
+});

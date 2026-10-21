@@ -267,7 +267,8 @@ function renderCreate() {
     const ours = Math.round((itemsTotal() + extras) * 100);
     const bill = Math.round((useSubtotal ? state.subtotal : state.total) * 100);
     const what = useSubtotal ? 'subtotal' : 'total';
-    box.innerHTML = Math.abs(ours - bill) <= 1
+    // Totals are often rounded to the nearest rupee ("Round off -0.16"), so allow for that.
+    box.innerHTML = Math.abs(ours - bill) <= (useSubtotal ? 1 : 100)
       ? `<div class="success" style="margin:12px 0 0">✓ Items add up to the bill's ${what} (${rupees(bill)}).</div>`
       : `<div class="warn" style="margin:12px 0 0"><span>⚠</span><span>These ${useSubtotal ? 'items' : 'items plus tax and tip'} add up to <b>${rupees(ours)}</b>, but the bill's ${what} is <b>${rupees(bill)}</b>. Some prices may have been misread or missed, so compare with your photo.</span></div>`;
   }
