@@ -128,6 +128,21 @@ button:focus-visible, .btn:focus-visible { outline: 3px solid color-mix(in srgb,
 
 .paste-zone { position: relative; }
 .paste-zone .actions { margin-top: 10px; }
+.scan-zone {
+  display: flex; align-items: center; gap: 14px; padding: 18px; border: 2px dashed color-mix(in srgb, var(--brand) 45%, var(--line));
+  border-radius: 14px; background: color-mix(in srgb, var(--brand-soft) 55%, var(--card)); cursor: pointer; transition: background .15s, border-color .15s;
+}
+.scan-zone:hover, .scan-zone.dragging { background: var(--brand-soft); border-color: var(--brand); }
+.scan-zone.scanning { cursor: progress; border-style: solid; }
+.scan-icon { font-size: 1.8rem; width: 52px; height: 52px; display: grid; place-items: center; border-radius: 12px; background: var(--card); flex: none; box-shadow: var(--shadow); }
+.scan-text { display: grid; gap: 2px; }
+.thumb { width: 52px; height: 52px; object-fit: cover; border-radius: 10px; display: block; border: 1px solid var(--line); }
+.parsed-banner .thumb { width: 40px; height: 40px; }
+.spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--brand); border-right-color: transparent; border-radius: 50%; animation: spin .7s linear infinite; vertical-align: -2px; margin-right: 4px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (pointer: coarse) { .desktop-only { display: none; } }
+.divider { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: .8rem; margin: 14px 0 10px; }
+.divider::before, .divider::after { content: ''; flex: 1; height: 1px; background: var(--line); }
 .parsed-banner { display: flex; align-items: center; justify-content: space-between; gap: 10px; background: var(--brand-soft); color: var(--brand-ink); border-radius: 12px; padding: 10px 12px; font-size: .88rem; font-weight: 600; margin-bottom: 12px; }
 
 .edit-list { display: grid; gap: 8px; }

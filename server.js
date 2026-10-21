@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const path = require('path');
 const db = require('./db');
 const { computeSplit, parseReceipt } = require('./split');
+const { readReceiptImage } = require('./ocr');
 
 const app = express();
 app.use(express.json({ limit: '100kb' }));
@@ -93,14 +94,31 @@ const route = (fn) => (req, res) => {
   }
 };
 
-// Turn pasted receipt text into items + extras.
-app.post('/api/parse-receipt', route((req, res) => {
-  const parsed = parseReceipt(clean(req.body.text, 20000));
-  res.json({
+function parsedResponse(text) {
+  const parsed = parseReceipt(text);
+  return {
+    text,
     items: parsed.items.map((i) => ({ ...i, price: i.price / 100 })),
     tax: parsed.tax / 100, tip: parsed.tip / 100, discount: parsed.discount / 100,
-  });
+  };
+}
+
+// Turn pasted receipt text into items + extras.
+app.post('/api/parse-receipt', route((req, res) => {
+  res.json(parsedResponse(clean(req.body.text, 20000)));
 }));
+
+// Turn a photo or screenshot of a receipt into items + extras (OCR, then the same parser).
+app.post('/api/scan-receipt', express.raw({ type: ['image/jpeg', 'image/png'], limit: '8mb' }), async (req, res) => {
+  if (!Buffer.isBuffer(req.body) || !req.body.length) return res.status(400).json({ error: 'Send a JPEG or PNG image' });
+  try {
+    const text = await readReceiptImage(req.body);
+    res.json(parsedResponse(text.slice(0, 20000)));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Couldn't read that image. Try a clearer photo, or paste the text instead." });
+  }
+});
 
 // Create a bill. Returns the admin token, which only the creator keeps.
 app.post('/api/bills', route((req, res) => {

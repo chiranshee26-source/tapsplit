@@ -120,6 +120,8 @@ function parseReceipt(text) {
     }
     if (label) items.push({ name: label, qty: 1, price: amount });
   }
+  // OCR often lowercases the first letter ("paneer Tikka"), so tidy names up.
+  for (const it of items) it.name = it.name.charAt(0).toUpperCase() + it.name.slice(1);
   return { items, ...extras };
 }
 

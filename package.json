@@ -16,8 +16,10 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@tesseract.js-data/eng": "^1.0.0",
     "express": "^4.22.3",
-    "qrcode-generator": "^1.4.4"
+    "qrcode-generator": "^1.4.4",
+    "tesseract.js": "^5.1.1"
   },
   "engines": {
     "node": ">=22.5"

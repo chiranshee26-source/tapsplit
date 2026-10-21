@@ -164,14 +164,23 @@ function renderCreate() {
   $app.innerHTML = `
     <section class="hero">
       <h1>Split by <em>what you ate</em>, not equally.</h1>
-      <p class="muted">Paste the bill, share one link, and everyone taps their own dishes. Tax, tip and discounts are shared out fairly, to the paisa.</p>
-      <div class="steps"><span>① Paste the bill</span><span>② Share a link</span><span>③ Everyone taps their dishes</span></div>
+      <p class="muted">Snap a photo of the bill, share one link, and everyone taps their own dishes. Tax, tip and discounts are shared out fairly, to the paisa.</p>
+      <div class="steps"><span>① Snap or paste the bill</span><span>② Share a link</span><span>③ Everyone taps their dishes</span></div>
     </section>
 
     <div class="section-title"><h2><span class="step-num">1</span>What's on the bill?</h2></div>
     <div class="card">
       <div id="paste-zone" class="paste-zone">
-        <textarea id="receipt" aria-label="Receipt text" placeholder="Paste the receipt text here…&#10;&#10;Tip: on most phones you can copy text straight from a photo of the bill."></textarea>
+        <label class="scan-zone" id="scan-zone">
+          <input type="file" accept="image/*" id="scan-input" hidden />
+          <span class="scan-icon" aria-hidden="true">📷</span>
+          <span class="scan-text">
+            <b>Scan a photo or screenshot of the bill</b>
+            <span class="muted small">Tap to choose or take a photo<span class="desktop-only"> · drag it here · or press Ctrl+V to paste</span></span>
+          </span>
+        </label>
+        <div class="divider"><span>or paste the text</span></div>
+        <textarea id="receipt" aria-label="Receipt text" placeholder="Paste the receipt text here (from an e-bill, SMS or email)…"></textarea>
         <div class="actions">
           <button id="parse">Read items</button>
           <button class="ghost" id="sample">Try a sample bill</button>
@@ -245,10 +254,15 @@ function renderCreate() {
     updateCta();
   }
 
-  function showBanner(count) {
+  function showBanner(count, photoUrl) {
     const b = $('parsed-banner');
     b.classList.remove('hidden');
-    b.innerHTML = `<span>✓ Found ${plural(count, 'item')}. Check they look right.</span><button class="link-btn" id="repaste">Paste again</button>`;
+    b.innerHTML = `
+      <span style="display:flex;align-items:center;gap:10px">
+        ${photoUrl ? `<a href="${photoUrl}" target="_blank" rel="noopener" title="Open your photo"><img class="thumb" src="${photoUrl}" alt="Your bill" /></a>` : ''}
+        <span>✓ ${photoUrl ? 'Read' : 'Found'} ${plural(count, 'item')}${photoUrl ? ' from your photo' : ''}. Check they look right.</span>
+      </span>
+      <button class="link-btn" id="repaste">${photoUrl ? 'Try another' : 'Paste again'}</button>`;
   }
 
   $app.oninput = (e) => {
@@ -284,21 +298,97 @@ function renderCreate() {
     if (t.id === 'create') return create();
   };
 
+  function applyParsed(parsed, photoUrl) {
+    state.items = parsed.items.map((i) => ({ name: i.name, qty: i.qty, price: String(i.price) }));
+    state.showPaste = false;
+    $('tax').value = parsed.tax || '';
+    $('tip').value = parsed.tip || '';
+    $('discount').value = parsed.discount || '';
+    showBanner(parsed.items.length, photoUrl);
+    drawItems();
+    if (!$('payer').value) $('payer').focus({ preventScroll: true });
+  }
+
   async function parse() {
     if (!$('receipt').value.trim()) { toast('Paste the receipt text first'); $('receipt').focus(); return; }
     try {
       const parsed = await api('POST', '/api/parse-receipt', { text: $('receipt').value });
       if (!parsed.items.length) return toast("Couldn't find any items. Try typing them instead.");
-      state.items = parsed.items.map((i) => ({ name: i.name, qty: i.qty, price: String(i.price) }));
-      state.showPaste = false;
-      $('tax').value = parsed.tax || '';
-      $('tip').value = parsed.tip || '';
-      $('discount').value = parsed.discount || '';
-      showBanner(parsed.items.length);
-      drawItems();
-      if (!$('payer').value) $('payer').focus({ preventScroll: true });
+      applyParsed(parsed);
     } catch (err) { toast(err.message); }
   }
+
+  // ---------- scanning a photo / screenshot ----------
+  // Resize to a size OCR likes (small screenshots are enlarged, huge photos shrunk) and send it as JPEG.
+  function prepareImage(file) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        const long = Math.max(img.naturalWidth, img.naturalHeight);
+        const scale = long > 2200 ? 2200 / long : long < 1000 ? Math.min(2, 1000 / long) : 1;
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(img.naturalWidth * scale);
+        canvas.height = Math.round(img.naturalHeight * scale);
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error('Could not process that image'))), 'image/jpeg', 0.9);
+      };
+      img.onerror = () => reject(new Error("That file doesn't look like an image we can read"));
+      img.src = URL.createObjectURL(file);
+    });
+  }
+
+  async function scanImage(file) {
+    if (!file || !file.type.startsWith('image/')) return toast('Choose a photo or screenshot of the bill');
+    const zone = $('scan-zone');
+    if (zone.classList.contains('scanning')) return;
+    const photoUrl = URL.createObjectURL(file);
+    zone.classList.add('scanning');
+    zone.querySelector('.scan-icon').innerHTML = `<img class="thumb" src="${photoUrl}" alt="" />`;
+    zone.querySelector('.scan-text').innerHTML = '<b><span class="spinner"></span> Reading your bill…</b><span class="muted small">This takes a few seconds</span>';
+    try {
+      const blob = await prepareImage(file);
+      const res = await fetch('/api/scan-receipt', { method: 'POST', headers: { 'Content-Type': 'image/jpeg' }, body: blob });
+      const parsed = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(parsed.error || 'Could not read that image');
+      $('receipt').value = parsed.text.trim();
+      if (!parsed.items.length) {
+        toast("Couldn't spot any prices. Check the text we read below, or type the items.");
+        $('receipt').focus();
+      } else {
+        applyParsed(parsed, photoUrl);
+      }
+    } catch (err) {
+      toast(err.message);
+    } finally {
+      resetScanZone();
+    }
+  }
+
+  function resetScanZone() {
+    const zone = $('scan-zone');
+    if (!zone) return;
+    zone.classList.remove('scanning', 'dragging');
+    zone.querySelector('.scan-icon').textContent = '📷';
+    zone.querySelector('.scan-text').innerHTML = '<b>Scan a photo or screenshot of the bill</b><span class="muted small">Tap to choose or take a photo<span class="desktop-only"> · drag it here · or press Ctrl+V to paste</span></span>';
+    $('scan-input').value = '';
+  }
+
+  $('scan-input').onchange = (e) => scanImage(e.target.files[0]);
+  const zone = $('scan-zone');
+  zone.ondragover = (e) => { e.preventDefault(); zone.classList.add('dragging'); };
+  zone.ondragleave = () => zone.classList.remove('dragging');
+  zone.ondrop = (e) => { e.preventDefault(); zone.classList.remove('dragging'); scanImage(e.dataTransfer.files[0]); };
+  // Paste a screenshot from the clipboard anywhere on this page.
+  document.onpaste = (e) => {
+    const file = [...(e.clipboardData?.files || [])].find((f) => f.type.startsWith('image/'));
+    if (!file) return; // plain text pastes go into the textarea as normal
+    e.preventDefault();
+    if (!state.showPaste) { state.showPaste = true; drawItems(); }
+    scanImage(file);
+  };
 
   async function create() {
     const items = state.items.filter((i) => i.name.trim() && num(i.price) > 0);
@@ -336,6 +426,7 @@ function renderBill(billId) {
 
   if (stream) stream.close();
   $app.oninput = null;
+  document.onpaste = null;
   $app.className = 'wide';
   $app.innerHTML = `
     <div class="skeleton" style="height:150px;margin-bottom:14px"></div>

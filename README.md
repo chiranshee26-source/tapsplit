@@ -27,7 +27,7 @@ TapSplit turns bill splitting from **one person doing data entry** into **everyo
 
 **How it works**
 
-1. **Paste:** The payer pastes the receipt text (from the printed bill, an SMS/e-bill, or a phone's "copy text from photo" feature). TapSplit's parser pulls out items, quantities, GST, service charge and discounts, and ignores headers like "Table 7" or "Bill No".
+1. **Snap or paste:** The payer **takes a photo or screenshot of the bill** (upload it, drag it in, or press Ctrl+V), or pastes the receipt text from an e-bill or SMS. The server reads the photo with OCR, and TapSplit's parser pulls out items, quantities, GST, service charge and discounts, ignoring headers like "Table 7" or "Bill No". Everything stays editable in case the OCR misreads something.
 2. **Share:** TapSplit creates a short link and a **QR code**. Friends at the table scan it from the payer's phone, or the payer sends it to WhatsApp in one tap. **Friends don't need an account or the app.** They open the link and type their name.
 3. **Tap:** Everyone taps the items they had. Claims update **live** on every phone, with colored avatars on each item. If several people tap the same item, it is split evenly between them automatically ("Split 3 ways · ₹120 each").
 4. **Settle:** TapSplit shares out tax, tip and discount **in proportion to what each person ordered**, rounded to the paisa so the shares add up *exactly* to the bill. Each friend gets a **"Pay via UPI"** button pre-filled with the payer's UPI ID and the exact amount.
@@ -48,8 +48,10 @@ TapSplit turns bill splitting from **one person doing data entry** into **everyo
 
 ```mermaid
 flowchart TD
-    A[Payer opens TapSplit] --> B[Paste receipt text]
-    B --> C{Parser}
+    A[Payer opens TapSplit] --> B[Snap a photo of the bill<br/>or paste its text]
+    B -->|photo| O[OCR on the server]
+    O --> C{Parser}
+    B -->|text| C
     C -->|items, qty| D[Review / edit items]
     C -->|GST, service, discount| D
     D --> E[Create bill → short link]
@@ -92,13 +94,17 @@ flowchart TD
 
 ### Screenshots of the working prototype
 
-| Paste receipt → items | Share via QR / WhatsApp | Friend joins via link | Live claiming |
+| Scan a photo of the bill | Photo → editable items | Share via QR / WhatsApp | Friend joins via link |
 |---|---|---|---|
-| ![](docs/screenshots/2-parsed.png) | ![](docs/screenshots/3-share.png) | ![](docs/screenshots/4-join.png) | ![](docs/screenshots/5-claiming-live.png) |
+| ![](docs/screenshots/0-scanning.png) | ![](docs/screenshots/0-scanned.png) | ![](docs/screenshots/3-share.png) | ![](docs/screenshots/4-join.png) |
 
-| Tapping for a friend | Your breakdown | Who owes what + paid status | Dark mode |
+| Live claiming | Tapping for a friend | Your breakdown | Who owes what + paid status |
 |---|---|---|---|
-| ![](docs/screenshots/6-tapping-for-friend.png) | ![](docs/screenshots/7-breakdown.png) | ![](docs/screenshots/8-summary.png) | ![](docs/screenshots/10-dark.png) |
+| ![](docs/screenshots/5-claiming-live.png) | ![](docs/screenshots/6-tapping-for-friend.png) | ![](docs/screenshots/7-breakdown.png) | ![](docs/screenshots/8-summary.png) |
+
+| Pasting receipt text instead | Dark mode (🌙 toggle) | | |
+|---|---|---|---|
+| ![](docs/screenshots/2-parsed.png) | ![](docs/screenshots/10-dark.png) | | |
 
 **Desktop:** items on the left, live summary on the right.
 
@@ -118,11 +124,13 @@ flowchart LR
       API[REST API]
       SSE[SSE live channel]
       LOGIC[split.js<br/>pure split logic + receipt parser]
+      OCR[ocr.js<br/>Tesseract OCR for bill photos]
     end
     DB[(SQLite<br/>bills · items · people · claims)]
     UI -- fetch JSON --> API
     SSE -- push bill updates --> UI
     API --> LOGIC
+    API --> OCR
     API --> DB
     UI <--> LS
 ```
@@ -137,7 +145,8 @@ flowchart LR
 | Database | **SQLite** (Node's built-in `node:sqlite`) | Zero setup, a single file, nothing native to compile; the tables carry over to PostgreSQL unchanged |
 | Payments | **UPI deep links** (`upi://pay?pa=…&am=…`) | Opens GPay/PhonePe/Paytm with the amount pre-filled, and needs no payment gateway |
 | Sharing | QR codes generated in the browser (`qrcode-generator`) + WhatsApp share links | Friends at the same table can join in seconds |
-| Tests | `node:test` (built-in) | Unit tests for the split math and parser, plus an API integration test |
+| OCR | **Tesseract** (`tesseract.js` + bundled English data from `@tesseract.js-data/eng`) | Reads photos and screenshots of bills on the server. Free, needs no API key, works offline |
+| Tests | `node:test` (built-in) | Unit tests for the split math and parser, plus API integration tests (including OCR on a sample receipt photo) |
 
 ### Key design decisions
 
@@ -161,6 +170,7 @@ claims (item_id → items, person_id → people)        PRIMARY KEY(item_id, per
 | Method | Endpoint | Purpose |
 |---|---|---|
 | `POST` | `/api/parse-receipt` | Receipt text → `{ items, tax, tip, discount }` |
+| `POST` | `/api/scan-receipt` | Photo/screenshot (JPEG or PNG body) → OCR → same as above, plus the text it read |
 | `POST` | `/api/bills` | Create bill → `{ id, adminToken, personId, bill }` |
 | `GET` | `/api/bills/:id` | Bill + items + people + claims + computed split |
 | `GET` | `/api/bills/:id/events` | **SSE stream** of live bill updates |
@@ -174,7 +184,7 @@ claims (item_id → items, person_id → people)        PRIMARY KEY(item_id, per
 ### How it would ship inside Splitwise
 
 1. Add a **"Split by item"** button to Splitwise's "Add expense" screen, which opens this flow.
-2. Replace text pasting with **on-device OCR** (Google ML Kit / Apple Vision) so users can just photograph the receipt.
+2. Move OCR **on-device** (Google ML Kit / Apple Vision): it's faster, works offline, and the photo never leaves the phone.
 3. When the bill is locked, create normal **Splitwise expenses** for each person, so balances, reminders and "Settle up" keep working as they do today.
 4. Scale-out: PostgreSQL instead of SQLite, and Redis pub/sub so live updates work across multiple server instances.
 
@@ -189,7 +199,7 @@ npm test           # run unit + API tests
 ```
 
 **Try the demo:**
-1. Open `http://localhost:3000`, enter a title and your name, then click **Use sample receipt** → **Create & get share link**.
+1. Open `http://localhost:3000` and click **Scan a photo or screenshot of the bill**. Pick `test/fixtures/receipt-photo.jpg` (or a photo of any real bill), or just click **Try a sample bill**. Type your name, then click **Create bill**.
 2. Copy the link and open it in a **private/incognito window** (that's "your friend"). Join as a different name.
 3. Tap items in both windows and watch them update live. Scroll down to **Who owes what**.
 
@@ -200,19 +210,21 @@ tapsplit/
 ├── server.js          # Express app: REST API + SSE live updates
 ├── db.js              # SQLite schema (node:sqlite)
 ├── split.js           # Pure logic: proportional split, rounding, receipt parser
+├── ocr.js             # Reads bill photos/screenshots with Tesseract OCR
 ├── public/
 │   ├── index.html
 │   ├── styles.css     # Mobile-first, light by default with a dark-mode toggle
 │   └── app.js         # Single-page frontend (bottom sheets, filters, QR share, live updates)
 ├── test/
 │   ├── split.test.js  # Split math + parser tests
-│   └── api.test.js    # End-to-end API test
+│   ├── api.test.js    # End-to-end API tests (incl. OCR)
+│   └── fixtures/      # A sample receipt photo for the OCR test
 └── docs/screenshots/
 ```
 
 ### Future ideas
 
-- Photo → OCR receipt scanning
+- Smarter scanning for crumpled or handwritten bills (e.g. a vision AI model)
 - "Usual order" memory: suggests items you usually claim at the same restaurant
 - Group bills over a trip into one settle-up using the minimum number of transfers
 - Nudges: auto-remind people who haven't claimed after 10 minutes

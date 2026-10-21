@@ -46,3 +46,21 @@ test('create → join → claim → summary', async (t) => {
   assert.strictEqual((await call('POST', `/bills/${id}/claims/toggle`, { itemId: chai.id, personId: bea })).status, 409);
   assert.strictEqual((await call('GET', '/bills/nope')).status, 404);
 });
+
+test('scan a photo of a receipt (OCR)', async (t) => {
+  const fs = require('fs');
+  const path = require('path');
+  const server = app.listen(0);
+  t.after(async () => { server.close(); await require('../ocr').closeOcr(); });
+  const res = await fetch(`http://localhost:${server.address().port}/api/scan-receipt`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'image/jpeg' },
+    body: fs.readFileSync(path.join(__dirname, 'fixtures', 'receipt-photo.jpg')),
+  });
+  assert.strictEqual(res.status, 200);
+  const body = await res.json();
+  assert.strictEqual(body.items.length, 6);
+  assert.deepStrictEqual(body.items.find((i) => i.name === 'Cold Coffee'), { name: 'Cold Coffee', qty: 2, price: 180 });
+  assert.strictEqual(body.discount, 100);
+  assert.strictEqual(body.tax, 69.5);
+});
