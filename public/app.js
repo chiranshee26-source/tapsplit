@@ -101,6 +101,22 @@ function shareSheet(bill) {
   else nativeBtn.onclick = () => navigator.share({ title: 'TapSplit', text, url }).catch(() => {});
 }
 
+// ---------- theme toggle ----------
+const themeBtn = document.getElementById('theme-toggle');
+function syncThemeButton() {
+  const dark = document.documentElement.dataset.theme === 'dark';
+  themeBtn.textContent = dark ? '☀️' : '🌙';
+  themeBtn.setAttribute('aria-label', dark ? 'Switch to light mode' : 'Switch to dark mode');
+}
+themeBtn.onclick = () => {
+  const dark = document.documentElement.dataset.theme !== 'dark';
+  if (dark) document.documentElement.dataset.theme = 'dark';
+  else delete document.documentElement.dataset.theme;
+  try { localStorage.setItem('tapsplit:theme', dark ? 'dark' : 'light'); } catch {}
+  syncThemeButton();
+};
+syncThemeButton();
+
 // ---------- router ----------
 function navigate(path) {
   history.pushState(null, '', path);

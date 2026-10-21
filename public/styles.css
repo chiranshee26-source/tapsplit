@@ -16,23 +16,22 @@
   --shadow-lg: 0 10px 40px rgba(16, 24, 20, .18);
   --ease: cubic-bezier(.2, .8, .2, 1);
 }
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0d1210;
-    --card: #161e1b;
-    --sunken: #101614;
-    --text: #e9efec;
-    --muted: #93a19b;
-    --line: #26312d;
-    --brand: #2fc796;
-    --brand-dark: #25a87e;
-    --brand-soft: #143429;
-    --brand-ink: #8de6c5;
-    --warn: #fb923c;
-    --warn-soft: #34200f;
-    --shadow: none;
-    --shadow-lg: 0 10px 40px rgba(0, 0, 0, .5);
-  }
+/* Light is the default; dark mode is opt-in via the toggle in the top bar. */
+:root[data-theme="dark"] {
+  --bg: #0d1210;
+  --card: #161e1b;
+  --sunken: #101614;
+  --text: #e9efec;
+  --muted: #93a19b;
+  --line: #26312d;
+  --brand: #2fc796;
+  --brand-dark: #25a87e;
+  --brand-soft: #143429;
+  --brand-ink: #8de6c5;
+  --warn: #fb923c;
+  --warn-soft: #34200f;
+  --shadow: none;
+  --shadow-lg: 0 10px 40px rgba(0, 0, 0, .5);
 }
 
 * { box-sizing: border-box; }
@@ -66,6 +65,8 @@ a { color: var(--brand); }
 }
 .brand { font-weight: 800; color: var(--text); text-decoration: none; font-size: 1.05rem; display: flex; align-items: center; gap: 8px; letter-spacing: -0.02em; }
 .logo { display: inline-grid; place-items: center; width: 28px; height: 28px; border-radius: 9px; background: var(--brand); color: #fff; font-size: .95rem; }
+.theme-toggle { margin-left: auto; width: 34px; height: 34px; padding: 0; border-radius: 10px; background: var(--sunken); color: var(--text); font-size: 1rem; }
+.theme-toggle:hover { background: var(--line); }
 .tag { font-size: .72rem; color: var(--muted); border: 1px solid var(--line); padding: 2px 8px; border-radius: 99px; }
 @media (max-width: 380px) { .tag { display: none; } }
 
@@ -102,7 +103,7 @@ button, .btn {
 }
 button:hover, .btn:hover { background: var(--brand-dark); }
 button:active, .btn:active { transform: scale(.97); }
-button:disabled { opacity: .45; cursor: not-allowed; transform: none; }
+button:disabled { background: var(--line); color: var(--muted); cursor: not-allowed; transform: none; }
 button:focus-visible, .btn:focus-visible { outline: 3px solid color-mix(in srgb, var(--brand) 45%, transparent); outline-offset: 2px; }
 .ghost { background: var(--card); color: var(--text); border: 1px solid var(--line); }
 .ghost:hover { background: var(--sunken); }

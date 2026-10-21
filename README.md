@@ -145,7 +145,7 @@ flowchart LR
 - **Proportional extras:** tax, service charge and discount are distributed by each person's share of the food subtotal. Someone who ordered 40% of the food pays 40% of the GST and gets 40% of the discount.
 - **No sign-up for friends, but still safe:** the bill ID is random and unguessable. Only the creator gets a secret `adminToken` (sent as the `x-admin-token` header) for edits and locking. Locked bills reject all changes with `409`.
 - **Optimistic UI:** a tapped item highlights instantly, and the SSE stream then confirms the server's state on every phone.
-- **Mobile-first UX:** thumb-friendly tap targets, a sticky bottom bar with your running total, bottom sheets instead of browser pop-ups, haptic feedback, dark mode, and respect for "reduce motion" settings.
+- **Mobile-first UX:** thumb-friendly tap targets, a sticky bottom bar with your running total, bottom sheets instead of browser pop-ups, haptic feedback, a light/dark toggle, and respect for "reduce motion" settings.
 
 ### Data model
 
@@ -202,7 +202,7 @@ tapsplit/
 ├── split.js           # Pure logic: proportional split, rounding, receipt parser
 ├── public/
 │   ├── index.html
-│   ├── styles.css     # Mobile-first, supports dark mode
+│   ├── styles.css     # Mobile-first, light by default with a dark-mode toggle
 │   └── app.js         # Single-page frontend (bottom sheets, filters, QR share, live updates)
 ├── test/
 │   ├── split.test.js  # Split math + parser tests
